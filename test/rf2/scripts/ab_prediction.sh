@@ -16,7 +16,7 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 export TORCH_DETERMINISTIC=1
 export TORCH_USE_CUDA_DSA=0
 
-uv run rf2 \
+rf2 \
     --input-dir "$TEST_DIR/inputs_for_test" \
     --output-dir "$OUTPUT_DIR" \
     --num-recycles 1 \

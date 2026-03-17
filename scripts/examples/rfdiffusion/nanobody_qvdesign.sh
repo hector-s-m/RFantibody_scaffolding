@@ -8,7 +8,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXAMPLES_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-uv run rfdiffusion \
+rfdiffusion \
     --target "$EXAMPLES_DIR/example_inputs/rsv_site3.pdb" \
     --framework "$EXAMPLES_DIR/example_inputs/h-NbBCII10.pdb" \
     --output-quiver "$EXAMPLES_DIR/example_outputs/nb_designs.qv" \

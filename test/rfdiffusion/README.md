@@ -21,13 +21,13 @@ To run the RFdiffusion tests, use the run_tests.py script from the parent direct
 
 ```bash
 # Run all tests (each script runs separately as a parameterized test)
-uv run python -m test.run_tests --module rfdiffusion
+python -m test.run_tests --module rfdiffusion
 
 # Run tests with verbose output
-uv run python -m test.run_tests --module rfdiffusion -v
+python -m test.run_tests --module rfdiffusion -v
 
 # Keep output files for inspection
-uv run python -m test.run_tests --module rfdiffusion --keep-outputs
+python -m test.run_tests --module rfdiffusion --keep-outputs
 ```
 
 By default, tests now use a temporary directory for outputs that is automatically cleaned up when tests complete. Use the `--keep-outputs` flag if you want to inspect the output files after the tests run. When using this flag, outputs will be stored in the `test/rfdiffusion/example_outputs` directory.
@@ -37,7 +37,7 @@ By default, tests now use a temporary directory for outputs that is automaticall
 If you need to create or update the reference files:
 
 ```bash
-uv run python -m test.run_tests --module rfdiffusion --create-refs
+python -m test.run_tests --module rfdiffusion --create-refs
 ```
 
 This will run all the example scripts and copy their outputs to the appropriate reference output directory based on the GPU being used.

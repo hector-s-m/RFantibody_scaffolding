@@ -72,7 +72,7 @@ echo "  - Designing $NUM_DESIGNS backbones"
 echo "  - Loop lengths: $DESIGN_LOOPS"
 echo "  - Hotspots: $HOTSPOTS"
 
-uv run rfdiffusion \
+rfdiffusion \
     --target "$TARGET_PDB" \
     --framework "$FRAMEWORK_PDB" \
     --output-quiver "$DIFFUSION_OUTPUT" \
@@ -93,7 +93,7 @@ echo "[Step 2/3] Running ProteinMPNN..."
 echo "  - Generating $NUM_SEQS sequences per backbone"
 echo "  - Sampling temperature: $SAMPLING_TEMP"
 
-uv run proteinmpnn \
+proteinmpnn \
     --input-quiver "$DIFFUSION_OUTPUT" \
     --output-quiver "$MPNN_OUTPUT" \
     --seqs-per-struct "$NUM_SEQS" \
@@ -109,7 +109,7 @@ echo ""
 echo "[Step 3/3] Running RF2..."
 echo "  - Refining structures with $NUM_RECYCLES recycles"
 
-uv run rf2 \
+rf2 \
     --input-quiver "$MPNN_OUTPUT" \
     --output-quiver "$RF2_OUTPUT" \
     --hotspot-show-prop "$HOTSPOT_SHOW_PROP" \
@@ -130,6 +130,6 @@ echo "  1. RFdiffusion backbones: $DIFFUSION_OUTPUT"
 echo "  2. ProteinMPNN sequences: $MPNN_OUTPUT"
 echo "  3. RF2 refined structures: $RF2_OUTPUT"
 echo ""
-echo "View results with: uv run qvls $RF2_OUTPUT"
-echo "Extract PDBs with: uv run qvextract $RF2_OUTPUT <output_dir>"
+echo "View results with: qvls $RF2_OUTPUT"
+echo "Extract PDBs with: qvextract $RF2_OUTPUT <output_dir>"
 echo "=============================================="

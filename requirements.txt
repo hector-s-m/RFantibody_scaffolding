@@ -6,9 +6,7 @@
 #   pip install torch>=2.3,<2.4 torchaudio torchvision --index-url https://download.pytorch.org/whl/cu118
 #   pip install dgl -f https://data.dgl.ai/wheels/torch-2.3/cu118/repo.html
 #   pip install -r requirements.txt
-#
-# Or use uv (recommended, handles everything automatically):
-#   uv sync
+#   pip install -e .
 
 # Core ML (install separately with --index-url, see above)
 # torch>=2.3,<2.4

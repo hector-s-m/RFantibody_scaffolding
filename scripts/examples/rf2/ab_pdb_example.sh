@@ -8,6 +8,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 mkdir -p "$SCRIPT_DIR/example_outputs"
 
-uv run rf2 \
+rf2 \
     --input-dir "$SCRIPT_DIR/example_inputs" \
     --output-dir "$SCRIPT_DIR/example_outputs"

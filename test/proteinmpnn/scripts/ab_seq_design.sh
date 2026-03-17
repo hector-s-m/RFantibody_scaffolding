@@ -14,7 +14,7 @@ OUTPUT_DIR=${1:-"$TEST_DIR/example_outputs"}
 export PYTHONHASHSEED=0
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
-uv run proteinmpnn \
+proteinmpnn \
     --input-dir "$TEST_DIR/inputs_for_test" \
     --output-dir "$OUTPUT_DIR" \
     --loops "H1,H2,H3,L1,L2,L3" \

@@ -50,10 +50,10 @@ class TestQuiverCLI:
         The extracted PDB files should be identical to the originals.
         """
         # Create quiver file from PDBs
-        run_cmd(f'uv run qvfrompdbs {input_dir}/*.pdb > test.qv', cwd=work_dir)
+        run_cmd(f'qvfrompdbs {input_dir}/*.pdb > test.qv', cwd=work_dir)
 
         # Extract the PDB files
-        run_cmd(f'uv run qvextract test.qv', cwd=work_dir)
+        run_cmd(f'qvextract test.qv', cwd=work_dir)
 
         # Compare extracted files to originals
         for pdb_file in glob.glob(f'{work_dir}/*.pdb'):
@@ -67,10 +67,10 @@ class TestQuiverCLI:
         Test that qvls returns the correct list of tags for a Quiver file.
         """
         # Create quiver file
-        run_cmd(f'uv run qvfrompdbs {input_dir}/*.pdb > test.qv', cwd=work_dir)
+        run_cmd(f'qvfrompdbs {input_dir}/*.pdb > test.qv', cwd=work_dir)
 
         # Run qvls
-        output = run_cmd(f'uv run qvls test.qv', cwd=work_dir)
+        output = run_cmd(f'qvls test.qv', cwd=work_dir)
         tags = [line.strip() for line in output.strip().split('\n') if line.strip()]
 
         # Get expected tags from PDB filenames
@@ -89,10 +89,10 @@ class TestQuiverCLI:
         Test that qvextractspecific extracts only the requested tags.
         """
         # Create quiver file
-        run_cmd(f'uv run qvfrompdbs {input_dir}/*.pdb > test.qv', cwd=work_dir)
+        run_cmd(f'qvfrompdbs {input_dir}/*.pdb > test.qv', cwd=work_dir)
 
         # Get 5 random tags
-        output = run_cmd(f'uv run qvls test.qv', cwd=work_dir)
+        output = run_cmd(f'qvls test.qv', cwd=work_dir)
         all_tags = [line.strip() for line in output.strip().split('\n') if line.strip()]
 
         import random
@@ -104,7 +104,7 @@ class TestQuiverCLI:
         with open(tags_file, 'w') as f:
             f.write('\n'.join(selected_tags))
 
-        run_cmd(f'cat tags.txt | uv run qvextractspecific test.qv', cwd=work_dir)
+        run_cmd(f'cat tags.txt | qvextractspecific test.qv', cwd=work_dir)
 
         # Check only selected tags were extracted
         extracted_pdbs = glob.glob(f'{work_dir}/*.pdb')
@@ -125,10 +125,10 @@ class TestQuiverCLI:
         Test that qvslice creates a new Quiver with only the requested tags.
         """
         # Create quiver file
-        run_cmd(f'uv run qvfrompdbs {input_dir}/*.pdb > test.qv', cwd=work_dir)
+        run_cmd(f'qvfrompdbs {input_dir}/*.pdb > test.qv', cwd=work_dir)
 
         # Get 5 random tags
-        output = run_cmd(f'uv run qvls test.qv', cwd=work_dir)
+        output = run_cmd(f'qvls test.qv', cwd=work_dir)
         all_tags = [line.strip() for line in output.strip().split('\n') if line.strip()]
 
         import random
@@ -140,10 +140,10 @@ class TestQuiverCLI:
         with open(tags_file, 'w') as f:
             f.write('\n'.join(selected_tags))
 
-        run_cmd(f'cat tags.txt | uv run qvslice test.qv > sliced.qv', cwd=work_dir)
+        run_cmd(f'cat tags.txt | qvslice test.qv > sliced.qv', cwd=work_dir)
 
         # Extract from sliced quiver
-        run_cmd(f'uv run qvextract sliced.qv', cwd=work_dir)
+        run_cmd(f'qvextract sliced.qv', cwd=work_dir)
 
         # Check only selected tags were in sliced quiver
         extracted_pdbs = glob.glob(f'{work_dir}/*.pdb')
@@ -169,14 +169,14 @@ class TestQuiverCLI:
         3. All original PDBs are present across split files
         """
         # Create quiver file
-        run_cmd(f'uv run qvfrompdbs {input_dir}/*.pdb > test.qv', cwd=work_dir)
+        run_cmd(f'qvfrompdbs {input_dir}/*.pdb > test.qv', cwd=work_dir)
 
         # Create split directory
         split_dir = os.path.join(work_dir, 'split')
         os.makedirs(split_dir)
 
         # Split with 3 tags per file
-        run_cmd(f'uv run qvsplit {work_dir}/test.qv 3 -o {split_dir}', cwd=work_dir)
+        run_cmd(f'qvsplit {work_dir}/test.qv 3 -o {split_dir}', cwd=work_dir)
 
         # Count original PDBs
         num_pdbs = len(glob.glob(f'{input_dir}/*.pdb'))
@@ -202,7 +202,7 @@ class TestQuiverCLI:
 
         # Extract all and verify all PDBs present
         for qv_file in split_files:
-            run_cmd(f'uv run qvextract {qv_file}', cwd=split_dir)
+            run_cmd(f'qvextract {qv_file}', cwd=split_dir)
 
         extracted_pdbs = glob.glob(f'{split_dir}/*.pdb')
         extracted_tags = set(os.path.basename(pdb)[:-4] for pdb in extracted_pdbs)
@@ -232,7 +232,7 @@ class TestQuiverCLI:
         scored_qv = os.path.join(input_dir, 'designs_scored.qv')
 
         # Get original tags
-        output = run_cmd(f'uv run qvls {scored_qv}', cwd=work_dir)
+        output = run_cmd(f'qvls {scored_qv}', cwd=work_dir)
         original_tags = [line.strip() for line in output.strip().split('\n') if line.strip()]
 
         # Generate new random tags
@@ -242,14 +242,14 @@ class TestQuiverCLI:
         with open(os.path.join(work_dir, 'newtags.txt'), 'w') as f:
             f.write('\n'.join(new_tags))
 
-        run_cmd(f'cat newtags.txt | uv run qvrename {scored_qv} > renamed.qv', cwd=work_dir)
+        run_cmd(f'cat newtags.txt | qvrename {scored_qv} > renamed.qv', cwd=work_dir)
 
         # Extract original PDBs
         os.makedirs(os.path.join(work_dir, 'original'), exist_ok=True)
-        run_cmd(f'uv run qvextract {scored_qv} -o {work_dir}/original', cwd=work_dir)
+        run_cmd(f'qvextract {scored_qv} -o {work_dir}/original', cwd=work_dir)
 
         # Extract renamed PDBs
-        run_cmd(f'uv run qvextract renamed.qv', cwd=work_dir)
+        run_cmd(f'qvextract renamed.qv', cwd=work_dir)
 
         # Verify renamed tags exist and content matches
         for i, (old_tag, new_tag) in enumerate(zip(original_tags, new_tags)):
@@ -262,8 +262,8 @@ class TestQuiverCLI:
 
         # Test score lines are renamed
         # qvscorefile writes to a .sc file with same name as input
-        run_cmd(f'uv run qvscorefile {scored_qv}', cwd=work_dir)
-        run_cmd(f'uv run qvscorefile renamed.qv', cwd=work_dir)
+        run_cmd(f'qvscorefile {scored_qv}', cwd=work_dir)
+        run_cmd(f'qvscorefile renamed.qv', cwd=work_dir)
 
         # Read the generated .sc files
         orig_sc = os.path.join(input_dir, 'designs_scored.sc')
@@ -289,7 +289,7 @@ class TestQuiverCLI:
         scored_qv = os.path.join(input_dir, 'designs_scored.qv')
 
         # Extract scores (writes to .sc file with same name as input)
-        run_cmd(f'uv run qvscorefile {scored_qv}', cwd=work_dir)
+        run_cmd(f'qvscorefile {scored_qv}', cwd=work_dir)
 
         # Read the generated .sc file
         sc_file = os.path.join(input_dir, 'designs_scored.sc')
@@ -304,7 +304,7 @@ class TestQuiverCLI:
         assert len(df) > 0, "Score file is empty"
 
         # Tags should match qvls output
-        tags_output = run_cmd(f'uv run qvls {scored_qv}', cwd=work_dir)
+        tags_output = run_cmd(f'qvls {scored_qv}', cwd=work_dir)
         expected_tags = [line.strip() for line in tags_output.strip().split('\n') if line.strip()]
 
         assert set(df['tag'].tolist()) == set(expected_tags), \

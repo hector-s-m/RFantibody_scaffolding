@@ -10,7 +10,7 @@ TEST_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Get the output directory from the first argument or use the default
 OUTPUT_DIR=${1:-"$TEST_DIR/example_outputs"}
 
-uv run rfdiffusion \
+rfdiffusion \
     --target "$TEST_DIR/inputs_for_test/rsv_site3.pdb" \
     --framework "$TEST_DIR/inputs_for_test/hu-4D5-8_Fv.pdb" \
     --output "$OUTPUT_DIR/ab_des" \

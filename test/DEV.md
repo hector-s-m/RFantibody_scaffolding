@@ -4,24 +4,24 @@
 
 - Python 3.10
 - Supported GPU: NVIDIA A4000 or H100
-- Dependencies installed: `uv sync --all-extras`
+- Dependencies installed: `pip install -e ".[test]"`
 
 ## Running Tests
 
 ### Run all tests
 
 ```bash
-uv run python -m test.run_tests
+python -m test.run_tests
 ```
 
 ### Run a specific module
 
 ```bash
-uv run python -m test.run_tests --module rfdiffusion
-uv run python -m test.run_tests --module proteinmpnn
-uv run python -m test.run_tests --module rf2
-uv run python -m test.run_tests --module util
-uv run python -m test.run_tests --module quiver
+python -m test.run_tests --module rfdiffusion
+python -m test.run_tests --module proteinmpnn
+python -m test.run_tests --module rf2
+python -m test.run_tests --module util
+python -m test.run_tests --module quiver
 ```
 
 ### Keep test outputs for inspection
@@ -29,7 +29,7 @@ uv run python -m test.run_tests --module quiver
 By default, tests use temporary directories that are cleaned up automatically. To preserve outputs:
 
 ```bash
-uv run python -m test.run_tests --keep-outputs
+python -m test.run_tests --keep-outputs
 ```
 
 Outputs will be saved to `test/<module>/example_outputs_<timestamp>/`.
@@ -37,7 +37,7 @@ Outputs will be saved to `test/<module>/example_outputs_<timestamp>/`.
 ### Verbose output
 
 ```bash
-uv run python -m test.run_tests --verbose
+python -m test.run_tests --verbose
 ```
 
 ## Creating Reference Files
@@ -45,7 +45,7 @@ uv run python -m test.run_tests --verbose
 Reference files are GPU-specific (A4000 vs H100 produce different outputs). To regenerate them:
 
 ```bash
-uv run python -m test.run_tests --create-refs
+python -m test.run_tests --create-refs
 ```
 
 This will:
