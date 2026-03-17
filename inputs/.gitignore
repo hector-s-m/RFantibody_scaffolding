@@ -1,2 +1,10 @@
-# Keep this directory tracked
+# Ignore all PDB files by default
+*.pdb
+
+# But track these specific input files
+!Nb.pdb
+!scFv.pdb
+!target+motif.pdb
+
+# Keep directory tracked
 !.gitkeep
