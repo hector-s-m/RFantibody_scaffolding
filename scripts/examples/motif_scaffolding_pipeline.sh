@@ -200,35 +200,40 @@ echo "  - Loop lengths: $DESIGN_LOOPS"
 
 conda activate "$RFANTIBODY_ENV"
 
-# Build RFdiffusion command (calling script directly — no entry point dependency)
-RFDIFF_CMD="python scripts/rfdiffusion_inference.py --config-name antibody \
-    antibody.framework_pdb=$(realpath \"$FRAMEWORK_PDB\") \
-    inference.output_prefix=$(realpath \"$OUTPUT_DIR/designs/ab_des\") \
-    inference.num_designs=$NUM_DESIGNS \
-    diffuser.T=$DIFFUSER_T \
-    antibody.motif_pdb=$(realpath \"$MOTIF_COMBINED_PDB\") \
-    antibody.motif_cdr_loop=$MOTIF_CDR"
+# Resolve paths to absolute (Hydra changes cwd)
+ABS_FRAMEWORK=$(realpath "$FRAMEWORK_PDB")
+ABS_OUTPUT_PREFIX=$(mkdir -p "$OUTPUT_DIR/designs" && realpath "$OUTPUT_DIR/designs")/ab_des
+ABS_MOTIF=$(realpath "$MOTIF_COMBINED_PDB")
 
 # Parse design loops into Hydra format
 IFS=',' read -ra LOOP_ITEMS <<< "$DESIGN_LOOPS"
 LOOP_STR=$(printf ",%s" "${LOOP_ITEMS[@]}")
 LOOP_STR="${LOOP_STR:1}"  # Remove leading comma
-RFDIFF_CMD="$RFDIFF_CMD antibody.design_loops=[$LOOP_STR]"
+
+# Build RFdiffusion command (calling script directly — no entry point dependency)
+RFDIFF_CMD=(python scripts/rfdiffusion_inference.py --config-name antibody
+    "antibody.framework_pdb=$ABS_FRAMEWORK"
+    "inference.output_prefix=$ABS_OUTPUT_PREFIX"
+    "inference.num_designs=$NUM_DESIGNS"
+    "diffuser.T=$DIFFUSER_T"
+    "antibody.motif_pdb=$ABS_MOTIF"
+    "antibody.motif_cdr_loop=$MOTIF_CDR"
+    "antibody.design_loops=[$LOOP_STR]"
+)
 
 if [ -n "$HOTSPOTS" ]; then
     IFS=',' read -ra HS_ITEMS <<< "$HOTSPOTS"
     HS_STR=$(printf ",%s" "${HS_ITEMS[@]}")
     HS_STR="${HS_STR:1}"
-    RFDIFF_CMD="$RFDIFF_CMD ppi.hotspot_res=[$HS_STR]"
+    RFDIFF_CMD+=("ppi.hotspot_res=[$HS_STR]")
 fi
 
 # Auto-detect weights
 if [ -f "weights/RFdiffusion_Ab.pt" ]; then
-    RFDIFF_CMD="$RFDIFF_CMD inference.ckpt_override_path=$(realpath weights/RFdiffusion_Ab.pt)"
+    RFDIFF_CMD+=("inference.ckpt_override_path=$(realpath weights/RFdiffusion_Ab.pt)")
 fi
 
-mkdir -p "$OUTPUT_DIR/designs"
-eval $RFDIFF_CMD
+"${RFDIFF_CMD[@]}"
 
 echo "[Step 1/3] RFdiffusion complete."
 
