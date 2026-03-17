@@ -80,8 +80,13 @@ FIRST_PT=$(echo "$PT_FILES" | head -1)
 echo "Found checkpoint: $FIRST_PT"
 
 if [ "$FIRST_PT" != "$TARGET_WEIGHT" ]; then
-    ln -sf "$FIRST_PT" "$TARGET_WEIGHT"
-    echo "Linked to: $TARGET_WEIGHT"
+    # Try symlink first, fall back to copy (some filesystems don't support symlinks)
+    if ln -sf "$FIRST_PT" "$TARGET_WEIGHT" 2>/dev/null; then
+        echo "Linked to: $TARGET_WEIGHT"
+    else
+        cp "$FIRST_PT" "$TARGET_WEIGHT"
+        echo "Copied to: $TARGET_WEIGHT"
+    fi
 fi
 
 # Cleanup zip
