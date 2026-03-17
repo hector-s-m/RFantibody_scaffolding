@@ -48,30 +48,69 @@ conda run -n boltz_2.2.1 boltz --help
 
 ## Quick Start
 
-### Standard Antibody Design
+### Full Pipeline (Recommended)
+
+Run the entire pipeline (RFdiffusion → AntiBMPNN → Boltz2) in one command. The script handles conda environment switching automatically.
+
+```bash
+# Nanobody design
+bash scripts/examples/motif_scaffolding_pipeline.sh \
+    --Nb -m "inputs/target+motif.pdb"
+
+# scFv design
+bash scripts/examples/motif_scaffolding_pipeline.sh \
+    --scFv -m "inputs/target+motif.pdb"
+```
+
+Common options:
+```bash
+bash scripts/examples/motif_scaffolding_pipeline.sh \
+    --Nb \
+    -m "inputs/target+motif.pdb" \
+    -n 100 \                          # Number of backbone designs
+    --design-loops "H1:,H2:,H3:10-16" \
+    --motif-cdr H3 \                  # CDR loop for motif placement
+    --hotspots "A100,A105" \          # Target hotspot residues
+    --num-seqs 4 \                    # Sequences per backbone
+    --temperature 0.2 \               # Sampling temperature
+    --diffusion-samples 1 \           # Boltz2 diffusion samples
+    -o output_Nb                      # Output directory
+```
+
+Outputs:
+```
+output_Nb/
+├── designs/          # RFdiffusion backbone PDBs
+├── mpnn_designs/     # AntiBMPNN sequence-designed PDBs
+├── boltz2_input/     # Boltz2 YAML inputs
+├── boltz2_output/    # Boltz2 predicted structures + confidence
+└── boltz2_metrics.csv  # Ranked metrics (ipTM, ipSAE, pDockQ, ...)
+```
+
+### Standard Antibody Design (without motif)
 
 ```bash
 uv run rfdiffusion \
     -t target.pdb \
-    -f framework.pdb \
+    -f inputs/Nb.pdb \
     -o designs/ab \
     -n 100 \
     -l "H1:7,H2:6,H3:5-13" \
     -h "B146,B170,B177"
 ```
 
-### Motif Scaffolding
+### Step-by-Step Motif Scaffolding
 
-Provide a combined PDB with target (chain A) + aromatic motif (last chain). The target is extracted automatically — no separate `--target` needed.
+For more control, run each step individually:
 
 ```bash
 # Step 1: RFdiffusion — design backbones with motif fixed in H3
 uv run rfdiffusion \
-    -f framework.pdb \
-    -m motif_combined.pdb \
+    -f inputs/Nb.pdb \
+    -m "inputs/target+motif.pdb" \
     -o designs/motif_ab \
     -n 100 \
-    -l "H1:,H2:,H3:10-16,L1:,L2:,L3:" \
+    -l "H1:,H2:,H3:10-16" \
     --motif-cdr H3
 
 # Step 2: AntiBMPNN — design sequences (motif residues stay fixed)
@@ -92,26 +131,37 @@ python scripts/extract_boltz2_metrics.py \
     -i boltz2_output/ -d mpnn_designs/ -o boltz2_metrics.csv
 ```
 
-A complete example script is at `scripts/examples/motif_scaffolding_pipeline.sh`.
-
 ## Input Files
 
-### Framework PDB
+All input files go in the `inputs/` directory.
 
-An HLT-formatted antibody or nanobody scaffold. Chains labeled H (heavy), L (light), T (target). CDR loop positions annotated via REMARK lines.
+| File | Description | Used by |
+|------|-------------|---------|
+| `inputs/Nb.pdb` | Nanobody framework (HLT format) | `--Nb` flag |
+| `inputs/scFv.pdb` | scFv framework (HLT format) | `--scFv` flag |
+| `inputs/target+motif.pdb` | Combined target + aromatic motif | `-m` flag |
+
+### Framework PDB (`Nb.pdb`, `scFv.pdb`)
+
+HLT-formatted antibody or nanobody scaffold:
+- **Chain H**: Heavy chain
+- **Chain L**: Light chain (scFv only)
+- **Chain T**: Target protein
+- Sequential 1-indexed residue numbering
+- CDR annotations via `REMARK PDBinfo-LABEL` lines
 
 Convert from Chothia format:
 ```bash
-python scripts/util/chothia_to_HLT.py -inpdb mychothia.pdb -outpdb myHLT.pdb
+python scripts/util/chothia_to_HLT.py -inpdb mychothia.pdb -outpdb inputs/Nb.pdb
 ```
 
-Provided frameworks:
+Example frameworks (for reference):
 - Nanobody: `scripts/examples/example_inputs/h-NbBCII10.pdb`
 - ScFv: `scripts/examples/example_inputs/hu-4D5-8_Fv.pdb`
 
-### Combined Motif PDB (for motif scaffolding)
+### Combined Motif PDB (`target+motif.pdb`)
 
-A PDB file containing:
+A single PDB file containing:
 - **Chain A** (or earlier chains): Target protein
 - **Last chain**: Aromatic peptide motif (2-6+ residues with PHE/TYR/TRP)
 
