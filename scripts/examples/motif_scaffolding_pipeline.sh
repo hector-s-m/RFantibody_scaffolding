@@ -197,7 +197,7 @@ echo "  - Loop lengths: $DESIGN_LOOPS"
 
 conda activate "$RFANTIBODY_ENV"
 
-RFDIFF_CMD="uv run rfdiffusion \
+RFDIFF_CMD="rfdiffusion \
     --framework \"$FRAMEWORK_PDB\" \
     --output \"$OUTPUT_DIR/designs/ab_des\" \
     --num-designs $NUM_DESIGNS \
@@ -237,7 +237,7 @@ for design_pdb in "$OUTPUT_DIR"/designs/ab_des_*.pdb; do
         MPNN_ARGS="$MPNN_ARGS -motif_fixed_positions $motif_json"
     fi
 
-    uv run python scripts/proteinmpnn_interface_design.py $MPNN_ARGS
+    python scripts/proteinmpnn_interface_design.py $MPNN_ARGS
 done
 
 echo "[Step 2/3] AntiBMPNN complete."

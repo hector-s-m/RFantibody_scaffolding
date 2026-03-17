@@ -23,27 +23,32 @@ Fork of [RFantibody](https://github.com/RosettaCommons/RFantibody) adding suppor
 git clone https://github.com/hector-s-m/RFantibody_scaffolding.git
 cd RFantibody_scaffolding
 
-# 2. Install uv (if not already installed)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# 2. Create/activate RFantibody conda environment (Python 3.10 required)
+conda create -n RFantibody python=3.10 -y
+conda activate RFantibody
 
-# 3. Download model weights (RFdiffusion)
+# 3. Install Python dependencies (order matters)
+pip install "torch>=2.3,<2.4" torchaudio torchvision --index-url https://download.pytorch.org/whl/cu118
+pip install dgl -f https://data.dgl.ai/wheels/torch-2.3/cu118/repo.html
+pip install -r requirements.txt
+pip install -e .
+
+# 4. Download model weights (RFdiffusion + ProteinMPNN + RF2)
 bash include/download_weights.sh
 
-# 4. Download AntiBMPNN weights (antibody-finetuned ProteinMPNN)
+# 5. Download AntiBMPNN weights (antibody-finetuned ProteinMPNN)
 bash scripts/setup_antibmpnn.sh
 
-# 5. Install RFantibody dependencies
-uv sync
+# 6. Verify RFantibody env
+rfdiffusion --help
 
-# 6. Set up Boltz2 environment (separate due to dependency conflicts)
+# 7. Set up Boltz2 environment (separate due to dependency conflicts)
+conda deactivate
 conda create -n boltz_2.2.1 python=3.11 -y
 conda activate boltz_2.2.1
 pip install boltz[cuda]
+boltz --help
 conda deactivate
-
-# 7. Verify
-uv run rfdiffusion --help
-conda run -n boltz_2.2.1 boltz --help
 ```
 
 ## Quick Start
@@ -90,7 +95,7 @@ output_Nb/
 ### Standard Antibody Design (without motif)
 
 ```bash
-uv run rfdiffusion \
+rfdiffusion \
     -t target.pdb \
     -f inputs/Nb.pdb \
     -o designs/ab \
@@ -105,7 +110,7 @@ For more control, run each step individually:
 
 ```bash
 # Step 1: RFdiffusion — design backbones with motif fixed in H3
-uv run rfdiffusion \
+rfdiffusion \
     -f inputs/Nb.pdb \
     -m "inputs/target+motif.pdb" \
     -o designs/motif_ab \
@@ -114,7 +119,7 @@ uv run rfdiffusion \
     --motif-cdr H3
 
 # Step 2: AntiBMPNN — design sequences (motif residues stay fixed)
-uv run proteinmpnn \
+proteinmpnn \
     -i designs/ \
     -o mpnn_designs/ \
     -n 4 -t 0.2
