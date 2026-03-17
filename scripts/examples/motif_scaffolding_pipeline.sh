@@ -35,6 +35,9 @@
 
 set -e  # Exit on error
 
+# Initialize conda for this shell (required for conda activate in scripts)
+eval "$(conda shell.bash hook)"
+
 # ============================================================================
 # DEFAULTS
 # ============================================================================
