@@ -1,0 +1,39 @@
+# RFantibody Scaffolding — Python dependencies
+# Install: pip install -r requirements.txt
+#
+# NOTE: PyTorch and DGL require CUDA 11.8. Install them first:
+#   pip install torch==2.3.* torchaudio torchvision --index-url https://download.pytorch.org/whl/cu118
+#   pip install dgl -f https://data.dgl.ai/wheels/torch-2.3/cu118/repo.html
+#
+# Then install the rest:
+#   pip install -r requirements.txt
+#
+# Alternatively, use uv (recommended):
+#   uv sync
+
+# Core ML
+torch==2.3.*
+torchaudio
+torchvision
+torch-utils
+numpy>=1.0,<2.0
+
+# CUDA
+cuda-python==11.8
+
+# Graph neural networks
+dgl
+e3nn
+
+# Configuration & CLI
+hydra-core
+click>=8.0.0
+
+# Bioinformatics
+biotite>=0.38.0
+
+# Data & utilities
+pandas
+opt-einsum
+pyrsistent
+icecream
