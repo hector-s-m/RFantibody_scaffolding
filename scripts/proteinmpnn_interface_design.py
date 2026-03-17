@@ -42,8 +42,28 @@ parser.add_argument("-loop_string", type=str, default='H1,H2,H3,L1,L2,L3',
 parser.add_argument("-seqs_per_struct", type=int, default="1",
                     help="The number of sequences to generate for each structure (default: 1)")
 
-# ProteinMPNN Specific Arguments
-default_ckpt = os.path.join( os.path.dirname(__file__), '/home/weights/ProteinMPNN_v48_noise_0.2.pt')
+# ProteinMPNN / AntiBMPNN Specific Arguments
+# Weight resolution: CLI flag > AntiBMPNN (if installed) > vanilla ProteinMPNN
+def _resolve_default_checkpoint():
+    """Find the best available ProteinMPNN checkpoint (AntiBMPNN preferred)."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    weights_dir = os.path.join(project_root, 'weights')
+
+    # Prefer AntiBMPNN weights
+    antibmpnn = os.path.join(weights_dir, 'antibmpnn', 'AntiBMPNN_v48_noise_0.2.pt')
+    if os.path.exists(antibmpnn):
+        return antibmpnn
+
+    # Fallback to vanilla ProteinMPNN
+    vanilla = os.path.join(weights_dir, 'ProteinMPNN_v48_noise_0.2.pt')
+    if os.path.exists(vanilla):
+        return vanilla
+
+    # Last resort: original hardcoded path
+    return '/home/weights/ProteinMPNN_v48_noise_0.2.pt'
+
+default_ckpt = _resolve_default_checkpoint()
 parser.add_argument("-checkpoint_path", type=str, default=default_ckpt)
 parser.add_argument("-temperature", type=float, default=0.000001, help='An a3m file containing the MSA of your target')
 parser.add_argument("-augment_eps", type=float, default=0,
@@ -94,6 +114,13 @@ class ProteinMPNN_runner():
         else:
             print('No GPU found, running ProteinMPNN on CPU')
             self.device = "cpu"
+
+        # Report which weights are being loaded
+        ckpt_name = os.path.basename(args.checkpoint_path)
+        if 'antibmpnn' in args.checkpoint_path.lower() or 'antibmpnn' in ckpt_name.lower():
+            print(f'Loading AntiBMPNN weights: {ckpt_name}')
+        else:
+            print(f'Loading ProteinMPNN weights: {ckpt_name}')
 
         self.mpnn_model = mpnn_util.init_seq_optimize_model(
             self.device,

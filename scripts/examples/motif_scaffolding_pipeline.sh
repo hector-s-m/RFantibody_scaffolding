@@ -5,7 +5,7 @@
 # ============================================================================
 # This script runs the motif scaffolding workflow:
 #   1. RFdiffusion  - Design antibody backbone with fixed motif in CDR loop
-#   2. ProteinMPNN  - Design sequences (motif residues stay fixed)
+#   2. AntiBMPNN    - Design sequences (motif residues stay fixed)
 #   3. RF2          - Predict/refine final structures
 #
 # Prerequisites:
@@ -36,9 +36,10 @@ DESIGN_LOOPS="H1:,H2:,H3:10-16,L1:,L2:,L3:"  # H3 range must fit motif + flanks
 HOTSPOTS=""                            # Target hotspot residues (optional)
 DIFFUSER_T=50                          # Diffusion timesteps
 
-# ProteinMPNN parameters
+# AntiBMPNN / ProteinMPNN parameters
 NUM_SEQS=4                             # Sequences per backbone
 SAMPLING_TEMP=0.2                      # Sampling temperature
+# Weights auto-resolved: AntiBMPNN if installed (run scripts/setup_antibmpnn.sh), else vanilla ProteinMPNN
 
 # RF2 parameters
 NUM_RECYCLES=10
@@ -93,9 +94,10 @@ echo "[Step 1/3] RFdiffusion complete."
 # ============================================================================
 
 echo ""
-echo "[Step 2/3] Running ProteinMPNN..."
+echo "[Step 2/3] Running AntiBMPNN / ProteinMPNN..."
 echo "  - Generating $NUM_SEQS sequences per backbone"
 echo "  - Motif residues will remain fixed"
+echo "  - Weights: AntiBMPNN if installed, else vanilla ProteinMPNN"
 
 # Run ProteinMPNN on each design, passing the motif fixed positions file
 for design_pdb in "$OUTPUT_DIR"/designs/ab_des_*.pdb; do

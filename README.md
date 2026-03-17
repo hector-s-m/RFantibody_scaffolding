@@ -7,7 +7,7 @@ Fork of [RFantibody](https://github.com/RosettaCommons/RFantibody) adding suppor
 ## Pipeline
 
 1. **RFdiffusion** — Design antibody backbone with fixed motif coordinates in CDR loop
-2. **ProteinMPNN** — Design sequences (motif residues stay fixed)
+2. **AntiBMPNN** — Antibody-finetuned ProteinMPNN for CDR sequence design (motif residues stay fixed)
 3. **RF2** — Predict/refine final structures
 
 ## Requirements
@@ -25,13 +25,16 @@ cd RFantibody_scaffolding
 # 2. Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 3. Download model weights
+# 3. Download model weights (RFdiffusion, RF2)
 bash include/download_weights.sh
 
-# 4. Install dependencies
+# 4. Download AntiBMPNN weights (antibody-finetuned ProteinMPNN)
+bash scripts/setup_antibmpnn.sh
+
+# 5. Install dependencies
 uv sync
 
-# 5. Verify
+# 6. Verify
 uv run rfdiffusion --help
 ```
 
@@ -63,7 +66,8 @@ uv run rfdiffusion \
     -l "H1:,H2:,H3:10-16,L1:,L2:,L3:" \
     --motif-cdr H3
 
-# Step 2: ProteinMPNN — design sequences (motif residues stay fixed)
+# Step 2: AntiBMPNN — design sequences (motif residues stay fixed)
+# Uses AntiBMPNN weights automatically if installed, else falls back to vanilla ProteinMPNN
 uv run proteinmpnn \
     -q designs.qv \
     --output-quiver sequences.qv \
@@ -118,7 +122,9 @@ The motif chain must have full backbone coordinates (N, CA, C, O). Sidechain ato
 | `-h, --hotspots` | Target hotspot residues |
 | `--deterministic` | Reproducible results |
 
-### ProteinMPNN
+### AntiBMPNN / ProteinMPNN
+
+Uses AntiBMPNN weights by default if installed (via `scripts/setup_antibmpnn.sh`). Falls back to vanilla ProteinMPNN otherwise. Override with `-w` to use specific weights.
 
 | Flag | Description |
 |------|-------------|
@@ -129,6 +135,7 @@ The motif chain must have full backbone coordinates (N, CA, C, O). Sidechain ato
 | `-n, --seqs-per-struct` | Sequences per structure |
 | `-t, --temperature` | Sampling temperature |
 | `-l, --loops` | Loops to design (default: all CDRs) |
+| `-w, --weights` | Override model weights (e.g., vanilla ProteinMPNN) |
 
 ### RF2
 
@@ -174,7 +181,7 @@ qvfrompdbs *.pdb > my.qv       # Create from PDBs
 3. Flanking residues are computed: `flanks = loop_length - motif_length`, split evenly with random ±1 offset
 4. Motif backbone coordinates are placed at the computed position within the CDR loop
 5. During diffusion, motif residues are masked (not denoised) — coordinates stay fixed
-6. During ProteinMPNN, motif residue identities are fixed — only flanking positions are redesigned
+6. During AntiBMPNN/ProteinMPNN, motif residue identities are fixed — only flanking positions are redesigned
 7. RF2 predicts the final structure; motif positions can be verified by RMSD
 
 ## Filtering

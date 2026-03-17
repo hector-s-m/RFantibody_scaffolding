@@ -65,7 +65,9 @@ class PathConfig:
         """Get path to model weights.
 
         Args:
-            model: Name of the model ('rfdiffusion', 'proteinmpnn', 'rf2')
+            model: Name of the model ('rfdiffusion', 'proteinmpnn', 'antibmpnn', 'rf2')
+                   'proteinmpnn' returns the best available weights: AntiBMPNN if
+                   installed (via scripts/setup_antibmpnn.sh), otherwise vanilla.
 
         Returns:
             Path to the model weights file
@@ -75,13 +77,22 @@ class PathConfig:
         """
         weights = {
             'rfdiffusion': 'RFdiffusion_Ab.pt',
-            'proteinmpnn': 'ProteinMPNN_v48_noise_0.2.pt',
+            'antibmpnn': str(Path('antibmpnn') / 'AntiBMPNN_v48_noise_0.2.pt'),
+            'proteinmpnn_vanilla': 'ProteinMPNN_v48_noise_0.2.pt',
             'rf2': 'RF2_ab.pt'
         }
 
+        # 'proteinmpnn' is an alias: prefer AntiBMPNN if available, else vanilla
+        if model == 'proteinmpnn':
+            antibmpnn_path = cls.WEIGHTS_DIR / weights['antibmpnn']
+            if antibmpnn_path.exists():
+                return antibmpnn_path
+            return cls.WEIGHTS_DIR / weights['proteinmpnn_vanilla']
+
         if model not in weights:
             raise ValueError(
-                f"Unknown model '{model}'. Must be one of: {', '.join(weights.keys())}"
+                f"Unknown model '{model}'. Must be one of: "
+                f"{', '.join(list(weights.keys()) + ['proteinmpnn'])}"
             )
 
         return cls.WEIGHTS_DIR / weights[model]

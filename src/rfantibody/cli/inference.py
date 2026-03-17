@@ -294,13 +294,21 @@ def proteinmpnn(
     if augment_eps is not None:
         cmd.extend(['-augment_eps', str(augment_eps)])
 
-    # Model weights
+    # Model weights — prefer AntiBMPNN if available, else vanilla ProteinMPNN
     if weights:
-        cmd.extend(['-checkpoint_path', str(weights)])
+        resolved_weights = weights
+        weight_label = 'custom'
     else:
-        default_weights = PathConfig.get_weight_path('proteinmpnn')
-        if default_weights.exists():
-            cmd.extend(['-checkpoint_path', str(default_weights)])
+        resolved_weights = PathConfig.get_weight_path('proteinmpnn')
+        if resolved_weights.exists():
+            # Determine which model we're using for display
+            weight_label = 'AntiBMPNN' if 'antibmpnn' in str(resolved_weights).lower() else 'vanilla ProteinMPNN'
+        else:
+            resolved_weights = None
+            weight_label = 'default (bundled)'
+
+    if resolved_weights is not None:
+        cmd.extend(['-checkpoint_path', str(resolved_weights)])
 
     # Flags
     if deterministic:
@@ -312,6 +320,7 @@ def proteinmpnn(
 
     input_source = input_dir or input_quiver
     click.echo(f'Running ProteinMPNN sequence design...')
+    click.echo(f'Model: {weight_label}')
     click.echo(f'Input: {input_source}')
     click.echo(f'Loops: {loops}')
     click.echo(f'Sequences per structure: {seqs_per_struct}')
