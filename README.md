@@ -8,12 +8,13 @@ Fork of [RFantibody](https://github.com/RosettaCommons/RFantibody) adding suppor
 
 1. **RFdiffusion** — Design antibody backbone with fixed motif coordinates in CDR loop
 2. **AntiBMPNN** — Antibody-finetuned ProteinMPNN for CDR sequence design (motif residues stay fixed)
-3. **RF2** — Predict/refine final structures
+3. **Boltz2** — Predict structures + confidence metrics (ipTM, pLDDT, PAE) for design ranking
 
 ## Requirements
 
-- NVIDIA GPU with CUDA 11.8+
+- NVIDIA GPU with CUDA 11.8+ (L40S / A100 / H100 recommended)
 - Linux (Ubuntu 22.04 recommended)
+- Two conda environments: `RFantibody` (Steps 1-2) and `boltz_2.2.1` (Step 3)
 
 ## Setup
 
@@ -25,17 +26,24 @@ cd RFantibody_scaffolding
 # 2. Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 3. Download model weights (RFdiffusion, RF2)
+# 3. Download model weights (RFdiffusion)
 bash include/download_weights.sh
 
 # 4. Download AntiBMPNN weights (antibody-finetuned ProteinMPNN)
 bash scripts/setup_antibmpnn.sh
 
-# 5. Install dependencies
+# 5. Install RFantibody dependencies
 uv sync
 
-# 6. Verify
+# 6. Set up Boltz2 environment (separate due to dependency conflicts)
+conda create -n boltz_2.2.1 python=3.11 -y
+conda activate boltz_2.2.1
+pip install boltz[cuda]
+conda deactivate
+
+# 7. Verify
 uv run rfdiffusion --help
+conda run -n boltz_2.2.1 boltz --help
 ```
 
 ## Quick Start
@@ -67,17 +75,21 @@ uv run rfdiffusion \
     --motif-cdr H3
 
 # Step 2: AntiBMPNN — design sequences (motif residues stay fixed)
-# Uses AntiBMPNN weights automatically if installed, else falls back to vanilla ProteinMPNN
 uv run proteinmpnn \
-    -q designs.qv \
-    --output-quiver sequences.qv \
+    -i designs/ \
+    -o mpnn_designs/ \
     -n 4 -t 0.2
 
-# Step 3: RF2 — predict structures
-uv run rf2 \
-    -q sequences.qv \
-    --output-quiver predictions.qv \
-    -r 10
+# Step 3: Boltz2 — predict structures + score (separate conda env)
+python scripts/prepare_boltz2_input.py -i mpnn_designs/ -o boltz2_input/
+
+conda activate boltz_2.2.1
+boltz predict boltz2_input/ --out_dir boltz2_output/ \
+    --use_msa_server --use_potentials --write_full_pae --write_full_pde
+conda deactivate
+
+python scripts/extract_boltz2_metrics.py \
+    -i boltz2_output/ -d mpnn_designs/ -o boltz2_metrics.csv
 ```
 
 A complete example script is at `scripts/examples/motif_scaffolding_pipeline.sh`.
@@ -137,7 +149,41 @@ Uses AntiBMPNN weights by default if installed (via `scripts/setup_antibmpnn.sh`
 | `-l, --loops` | Loops to design (default: all CDRs) |
 | `-w, --weights` | Override model weights (e.g., vanilla ProteinMPNN) |
 
-### RF2
+### Boltz2 (Structure Prediction + Scoring)
+
+Runs in a separate conda environment (`boltz_2.2.1`). Three sub-steps:
+
+```bash
+# 3a. Convert PDBs → Boltz2 YAML (RFantibody env)
+python scripts/prepare_boltz2_input.py -i mpnn_designs/ -o boltz2_input/
+
+# 3b. Predict structures (boltz_2.2.1 env)
+conda activate boltz_2.2.1
+boltz predict boltz2_input/ --out_dir boltz2_output/ --use_msa_server --use_potentials --write_full_pae --write_full_pde
+
+# 3c. Extract metrics (RFantibody env)
+python scripts/extract_boltz2_metrics.py -i boltz2_output/ -d mpnn_designs/ -o metrics.csv
+```
+
+Or use the wrapper: `bash scripts/run_boltz2_predict.sh -i boltz2_input/ -o boltz2_output/`
+
+**Metrics per design** (output CSV):
+
+| Metric | Source | Description |
+|--------|--------|-------------|
+| `ipTM` | Boltz2 JSON | Interface predicted TM-score |
+| `iPAE` | Boltz2 JSON | Interface Predicted Aligned Error |
+| `pLDDT` | Boltz2 JSON/NPZ | Predicted Local Distance Difference Test |
+| `iPLDDT` | Boltz2 JSON | Interface pLDDT |
+| `ipSAE` | PAE NPZ | Interaction prediction Score from Aligned Errors (Dunbrack) |
+| `pDockQ` | PAE + structure | Predicted DockQ score (Bryant et al.) |
+| `pDockQ2` | PAE + structure | Improved pDockQ (Zhu et al.) |
+| `LIS` | PAE NPZ | Local Interaction Score (Kim et al.) |
+| `binder_RMSD` | Designed vs predicted | CA RMSD of binder chains (designed → Boltz2) |
+
+### RF2 (Legacy)
+
+RF2 is still available for lightweight prediction without Boltz2:
 
 | Flag | Description |
 |------|-------------|
@@ -182,14 +228,16 @@ qvfrompdbs *.pdb > my.qv       # Create from PDBs
 4. Motif backbone coordinates are placed at the computed position within the CDR loop
 5. During diffusion, motif residues are masked (not denoised) — coordinates stay fixed
 6. During AntiBMPNN/ProteinMPNN, motif residue identities are fixed — only flanking positions are redesigned
-7. RF2 predicts the final structure; motif positions can be verified by RMSD
+7. Boltz2 predicts the final complex structure and provides confidence metrics for ranking
 
 ## Filtering
 
-Recommended criteria:
-- RF2 pAE < 10
-- RMSD (design vs RF2 prediction) < 2 A
-- Optional: Rosetta ddG < -20
+Recommended criteria for design selection:
+- ipTM > 0.7 (good interface prediction confidence)
+- ipSAE > 0.5 (strong interface interaction score)
+- pDockQ > 0.23 (acceptable docking quality)
+- binder RMSD < 2 Å (designed structure matches prediction)
+- pLDDT > 70 (overall structural confidence)
 
 ## License
 
