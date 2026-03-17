@@ -65,7 +65,7 @@ echo ""
 echo "Locating model checkpoint..."
 
 PT_FILES=$(find "$ANTIBMPNN_DIR" -name "*.pt" -type f 2>/dev/null)
-PT_COUNT=$(echo "$PT_FILES" | grep -c ".pt" || true)
+PT_COUNT=$(echo "$PT_FILES" | wc -l)
 
 if [ "$PT_COUNT" -eq 0 ]; then
     echo "Error: No .pt files found in extracted archive."
@@ -75,16 +75,13 @@ if [ "$PT_COUNT" -eq 0 ]; then
     exit 1
 fi
 
-# If the target doesn't exist yet, symlink the first .pt file found
-if [ ! -f "$TARGET_WEIGHT" ]; then
-    FIRST_PT=$(echo "$PT_FILES" | head -1)
-    echo "Found checkpoint: $FIRST_PT"
+# Symlink the first .pt file found to the expected target name
+FIRST_PT=$(echo "$PT_FILES" | head -1)
+echo "Found checkpoint: $FIRST_PT"
 
-    # If the file isn't already at the target location, create a symlink
-    if [ "$FIRST_PT" != "$TARGET_WEIGHT" ]; then
-        ln -sf "$FIRST_PT" "$TARGET_WEIGHT"
-        echo "Linked to: $TARGET_WEIGHT"
-    fi
+if [ "$FIRST_PT" != "$TARGET_WEIGHT" ]; then
+    ln -sf "$FIRST_PT" "$TARGET_WEIGHT"
+    echo "Linked to: $TARGET_WEIGHT"
 fi
 
 # Cleanup zip

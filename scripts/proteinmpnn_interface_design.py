@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 import rfantibody.proteinmpnn.util_protein_mpnn as mpnn_util
+from rfantibody.config import PathConfig
 from rfantibody.proteinmpnn.sample_features import SampleFeatures
 from rfantibody.proteinmpnn.struct_manager import StructManager
 
@@ -43,27 +44,8 @@ parser.add_argument("-seqs_per_struct", type=int, default="1",
                     help="The number of sequences to generate for each structure (default: 1)")
 
 # ProteinMPNN / AntiBMPNN Specific Arguments
-# Weight resolution: CLI flag > AntiBMPNN (if installed) > vanilla ProteinMPNN
-def _resolve_default_checkpoint():
-    """Find the best available ProteinMPNN checkpoint (AntiBMPNN preferred)."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    weights_dir = os.path.join(project_root, 'weights')
-
-    # Prefer AntiBMPNN weights
-    antibmpnn = os.path.join(weights_dir, 'antibmpnn', 'AntiBMPNN_v48_noise_0.2.pt')
-    if os.path.exists(antibmpnn):
-        return antibmpnn
-
-    # Fallback to vanilla ProteinMPNN
-    vanilla = os.path.join(weights_dir, 'ProteinMPNN_v48_noise_0.2.pt')
-    if os.path.exists(vanilla):
-        return vanilla
-
-    # Last resort: original hardcoded path
-    return '/home/weights/ProteinMPNN_v48_noise_0.2.pt'
-
-default_ckpt = _resolve_default_checkpoint()
+# Weight resolution delegated to PathConfig (single source of truth)
+default_ckpt = str(PathConfig.get_weight_path('proteinmpnn'))
 parser.add_argument("-checkpoint_path", type=str, default=default_ckpt)
 parser.add_argument("-temperature", type=float, default=0.000001, help='An a3m file containing the MSA of your target')
 parser.add_argument("-augment_eps", type=float, default=0,
@@ -116,11 +98,8 @@ class ProteinMPNN_runner():
             self.device = "cpu"
 
         # Report which weights are being loaded
-        ckpt_name = os.path.basename(args.checkpoint_path)
-        if 'antibmpnn' in args.checkpoint_path.lower() or 'antibmpnn' in ckpt_name.lower():
-            print(f'Loading AntiBMPNN weights: {ckpt_name}')
-        else:
-            print(f'Loading ProteinMPNN weights: {ckpt_name}')
+        weight_label = PathConfig.get_weight_label(args.checkpoint_path)
+        print(f'Loading {weight_label} weights: {os.path.basename(args.checkpoint_path)}')
 
         self.mpnn_model = mpnn_util.init_seq_optimize_model(
             self.device,

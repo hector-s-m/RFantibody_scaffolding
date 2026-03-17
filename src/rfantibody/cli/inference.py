@@ -297,15 +297,12 @@ def proteinmpnn(
     # Model weights — prefer AntiBMPNN if available, else vanilla ProteinMPNN
     if weights:
         resolved_weights = weights
-        weight_label = 'custom'
     else:
         resolved_weights = PathConfig.get_weight_path('proteinmpnn')
-        if resolved_weights.exists():
-            # Determine which model we're using for display
-            weight_label = 'AntiBMPNN' if 'antibmpnn' in str(resolved_weights).lower() else 'vanilla ProteinMPNN'
-        else:
+        if not resolved_weights.exists():
             resolved_weights = None
-            weight_label = 'default (bundled)'
+
+    weight_label = PathConfig.get_weight_label(resolved_weights)
 
     if resolved_weights is not None:
         cmd.extend(['-checkpoint_path', str(resolved_weights)])

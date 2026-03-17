@@ -28,6 +28,10 @@ class PathConfig:
     WEIGHTS_DIR = Path(os.getenv('RFANTIBODY_WEIGHTS', PROJECT_ROOT / 'weights'))
     SCRIPTS_DIR = Path(os.getenv('RFANTIBODY_SCRIPTS', PROJECT_ROOT / 'scripts'))
 
+    # Weight filenames (single source of truth)
+    ANTIBMPNN_WEIGHT = Path('antibmpnn') / 'AntiBMPNN_v48_noise_0.2.pt'
+    VANILLA_PROTEINMPNN_WEIGHT = 'ProteinMPNN_v48_noise_0.2.pt'
+
     # Scripts subdirectories
     EXAMPLES_DIR = SCRIPTS_DIR / 'examples'
     EXAMPLE_INPUTS = EXAMPLES_DIR / 'example_inputs'
@@ -77,8 +81,8 @@ class PathConfig:
         """
         weights = {
             'rfdiffusion': 'RFdiffusion_Ab.pt',
-            'antibmpnn': str(Path('antibmpnn') / 'AntiBMPNN_v48_noise_0.2.pt'),
-            'proteinmpnn_vanilla': 'ProteinMPNN_v48_noise_0.2.pt',
+            'antibmpnn': str(cls.ANTIBMPNN_WEIGHT),
+            'proteinmpnn_vanilla': cls.VANILLA_PROTEINMPNN_WEIGHT,
             'rf2': 'RF2_ab.pt'
         }
 
@@ -96,6 +100,25 @@ class PathConfig:
             )
 
         return cls.WEIGHTS_DIR / weights[model]
+
+    @classmethod
+    def get_weight_label(cls, weight_path: Path | str | None) -> str:
+        """Determine human-readable label for a weight file.
+
+        Args:
+            weight_path: Path to the weight file, or None
+
+        Returns:
+            One of 'AntiBMPNN', 'vanilla ProteinMPNN', or 'custom'
+        """
+        if weight_path is None:
+            return 'default (bundled)'
+        path_str = str(weight_path).lower()
+        if 'antibmpnn' in path_str:
+            return 'AntiBMPNN'
+        if 'proteinmpnn' in path_str:
+            return 'vanilla ProteinMPNN'
+        return 'custom'
 
     @classmethod
     def get_inference_script(cls, module: str) -> Path:
