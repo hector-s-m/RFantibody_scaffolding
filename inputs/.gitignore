@@ -1,0 +1,3 @@
+# Ignore user input PDB files (place your frameworks + motif here)
+*.pdb
+!.gitkeep
