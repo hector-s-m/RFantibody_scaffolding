@@ -200,19 +200,34 @@ echo "  - Loop lengths: $DESIGN_LOOPS"
 
 conda activate "$RFANTIBODY_ENV"
 
-RFDIFF_CMD="rfdiffusion \
-    --framework \"$FRAMEWORK_PDB\" \
-    --output \"$OUTPUT_DIR/designs/ab_des\" \
-    --num-designs $NUM_DESIGNS \
-    --design-loops \"$DESIGN_LOOPS\" \
-    --motif \"$MOTIF_COMBINED_PDB\" \
-    --motif-cdr \"$MOTIF_CDR\" \
-    --diffuser-t $DIFFUSER_T"
+# Build RFdiffusion command (calling script directly — no entry point dependency)
+RFDIFF_CMD="python scripts/rfdiffusion_inference.py --config-name antibody \
+    antibody.framework_pdb=$(realpath \"$FRAMEWORK_PDB\") \
+    inference.output_prefix=$(realpath \"$OUTPUT_DIR/designs/ab_des\") \
+    inference.num_designs=$NUM_DESIGNS \
+    diffuser.T=$DIFFUSER_T \
+    antibody.motif_pdb=$(realpath \"$MOTIF_COMBINED_PDB\") \
+    antibody.motif_cdr_loop=$MOTIF_CDR"
+
+# Parse design loops into Hydra format
+IFS=',' read -ra LOOP_ITEMS <<< "$DESIGN_LOOPS"
+LOOP_STR=$(printf ",%s" "${LOOP_ITEMS[@]}")
+LOOP_STR="${LOOP_STR:1}"  # Remove leading comma
+RFDIFF_CMD="$RFDIFF_CMD antibody.design_loops=[$LOOP_STR]"
 
 if [ -n "$HOTSPOTS" ]; then
-    RFDIFF_CMD="$RFDIFF_CMD --hotspots \"$HOTSPOTS\""
+    IFS=',' read -ra HS_ITEMS <<< "$HOTSPOTS"
+    HS_STR=$(printf ",%s" "${HS_ITEMS[@]}")
+    HS_STR="${HS_STR:1}"
+    RFDIFF_CMD="$RFDIFF_CMD ppi.hotspot_res=[$HS_STR]"
 fi
 
+# Auto-detect weights
+if [ -f "weights/RFdiffusion_Ab.pt" ]; then
+    RFDIFF_CMD="$RFDIFF_CMD inference.ckpt_override_path=$(realpath weights/RFdiffusion_Ab.pt)"
+fi
+
+mkdir -p "$OUTPUT_DIR/designs"
 eval $RFDIFF_CMD
 
 echo "[Step 1/3] RFdiffusion complete."
