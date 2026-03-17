@@ -109,8 +109,34 @@ class SampleFeatures():
         # Final assignment
         self.fixed_res = fixed_res
         self.chains = np.unique(self.pose.chain).tolist()
-            
-    
+
+
+    def add_motif_fixed_positions(self, motif_positions: dict) -> None:
+        """
+        Add motif residue positions to the fixed_res dict so that
+        ProteinMPNN does not redesign them.
+
+        Must be called AFTER loop_string2fixed_res().
+
+        Args:
+            motif_positions: dict of {chain: [1-indexed positions to fix]}
+                from CDRMotifMapper.get_fixed_positions_for_mpnn()
+        """
+        if not hasattr(self, 'fixed_res'):
+            raise RuntimeError(
+                "Call loop_string2fixed_res() before add_motif_fixed_positions()"
+            )
+
+        for chain, positions in motif_positions.items():
+            if chain not in self.fixed_res:
+                self.fixed_res[chain] = []
+            self.fixed_res[chain].extend(positions)
+            # Remove duplicates and sort
+            self.fixed_res[chain] = sorted(set(self.fixed_res[chain]))
+
+        print(f"Motif fixed positions added to ProteinMPNN: {motif_positions}")
+
+
     def thread_mpnn_seq(self, binder_seq: str) -> None:
         '''
         Thread the binder sequence onto the pose being designed

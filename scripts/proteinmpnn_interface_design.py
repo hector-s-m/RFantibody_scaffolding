@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import random
 import sys
@@ -57,6 +58,11 @@ parser.add_argument("-num_connections", type=int, default=48,
                          'better interface design but will cost more to run the model.')
 parser.add_argument("-allow_x", action="store_true", default=False,
                     help='Allow X (unknown) residues in output. Useful for debugging to see exactly which positions were designed.')
+
+# Motif scaffolding arguments
+parser.add_argument("-motif_fixed_positions", type=str, default='',
+                    help='JSON file with motif fixed positions (from RFdiffusion motif scaffolding). '
+                         'Format: {"H": [1-indexed positions], "L": [...]}')
 
 args = parser.parse_args(sys.argv[1:])
 
@@ -158,8 +164,8 @@ class ProteinMPNN_runner():
         t0 = time.time()
 
         print(f"Attempting pose: {tag}")
-        
-        # Load the pose 
+
+        # Load the pose
         pose = self.struct_manager.load_pose(tag)
 
         # Initialize the features
@@ -168,11 +174,17 @@ class ProteinMPNN_runner():
         # Parse the loop string and determine which residues should be designed
         sample_feats.loop_string2fixed_res(args.loop_string)
 
+        # Apply motif fixed positions if provided
+        if args.motif_fixed_positions:
+            with open(args.motif_fixed_positions, 'r') as f:
+                motif_positions = json.load(f)
+            sample_feats.add_motif_fixed_positions(motif_positions)
+
         self.proteinmpnn(sample_feats)
 
         seconds = int(time.time() - t0)
 
-        print(f"Struct: {pdb} reported success in {seconds} seconds")
+        print(f"Struct: {tag} reported success in {seconds} seconds")
 
 
 ####################

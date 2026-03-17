@@ -366,10 +366,20 @@ class AbSampler(Sampler):
 
             self.pose.from_HLT(self.inf_conf.input_pdb)
 
-        assert(~((self.ab_conf.target_pdb is None) ^ (self.ab_conf.framework_pdb is None))), \
-                "Having antibody.target and not antibody.framework_pdb or vice versa is not currently supported."
+        # When motif PDB is provided, load it early so we can extract the target
+        motif_pdb = getattr(self.ab_conf, 'motif_pdb', None)
+        if motif_pdb is not None:
+            from rfantibody.util.motif_loader import load_motif_combined_pdb, validate_motif
+            self._motif_data = load_motif_combined_pdb(motif_pdb)
+            validate_motif(self._motif_data)
+        else:
+            self._motif_data = None
 
-        if self.ab_conf.target_pdb is not None and self.ab_conf.framework_pdb is not None:
+        # Determine target source: explicit target_pdb, or extracted from motif PDB
+        has_target = self.ab_conf.target_pdb is not None
+        has_motif_target = self._motif_data is not None
+
+        if self.ab_conf.framework_pdb is not None:
             assert(self.diffuser_conf.partial_T is None), \
                     "Partial diffusion is only supported when using inference.input_pdb"
 
@@ -377,7 +387,17 @@ class AbSampler(Sampler):
                     "Both inference.input_pdb and antibody.target + antibody.framework_pdb cannot be active at the same time."
 
             self.pose.framework_from_HLT(self.ab_conf.framework_pdb)
-            self.pose.target_from_HLT(self.ab_conf.target_pdb)
+
+            if has_target:
+                self.pose.target_from_HLT(self.ab_conf.target_pdb)
+            elif has_motif_target:
+                print("Using target from combined motif PDB (no separate --target needed)")
+                self.pose.target_from_motif_data(self._motif_data)
+            else:
+                raise ValueError(
+                    "Must provide either antibody.target_pdb or antibody.motif_pdb "
+                    "(which contains both target and motif)"
+                )
 
 
         #### 2) Adjust the length of the CDR loops in the AbPose
@@ -397,6 +417,31 @@ class AbSampler(Sampler):
             ic(self.pose.length())
             ic(self.pose.binder_len())
             ic(self.pose.L.seq)
+
+
+        #### 2.5) Handle motif scaffolding if specified
+        ####################################################################################################
+        if self._motif_data is not None:
+            from rfantibody.util.cdr_motif_mapper import CDRMotifMapper
+
+            motif_cdr = getattr(self.ab_conf, 'motif_cdr_loop', 'H3')
+            motif_data = self._motif_data
+
+            self.motif_mapper = CDRMotifMapper(self.pose, motif_cdr, motif_data)
+            flank_n, flank_c = self.motif_mapper.place_motif_in_loop()
+
+            motif_result = self.pose.insert_motif_into_loop(
+                cdr_loop=motif_cdr,
+                motif_data=motif_data,
+                flank_n=flank_n,
+                flank_c=flank_c,
+            )
+            self.motif_data = motif_data
+            self.motif_global_indices = motif_result['motif_global_indices']
+        else:
+            self.motif_mapper = None
+            self.motif_data = None
+            self.motif_global_indices = None
 
 
         #### 3) Assemble the ab_item for use downstream. Also determine which residues we should design
@@ -452,6 +497,13 @@ class AbSampler(Sampler):
         self.mask_seq = torch.clone(~self.ab_item.loop_mask)
         #self.mask_seq = torch.clone(self.diffusion_mask)
         self.mask_str = torch.clone(self.diffusion_mask)
+
+        # If motif scaffolding is active, fix motif residues (True = not diffused)
+        if self.motif_global_indices is not None:
+            motif_idx = torch.tensor(self.motif_global_indices)
+            self.mask_seq[motif_idx] = True
+            self.mask_str[motif_idx] = True
+            self.diffusion_mask[motif_idx] = True
 
         # Determine the timesteps to use for diffusion
         if self.diffuser_conf.partial_T:
@@ -545,6 +597,26 @@ class AbSampler(Sampler):
         retval = [i.to(self.device) for i in retval]
 
         return retval
+
+    def has_motif(self) -> bool:
+        """Whether motif scaffolding is active for this design."""
+        return self.motif_global_indices is not None
+
+    def get_motif_trb_data(self) -> dict | None:
+        """Return motif metadata for TRB output, or None if no motif."""
+        if not self.has_motif():
+            return None
+        return {
+            'motif_global_indices': self.motif_global_indices,
+            'motif_seq': self.motif_data['motif_seq_str'],
+            'motif_cdr_loop': self.ab_conf.motif_cdr_loop,
+        }
+
+    def get_motif_fixed_positions_for_mpnn(self) -> dict | None:
+        """Return motif fixed positions for ProteinMPNN, or None if no motif."""
+        if not self.has_motif():
+            return None
+        return self.motif_mapper.get_fixed_positions_for_mpnn()
 
     def sample_step(self, *, t, seq_t, x_t, seq_init, final_step):
 

@@ -15,11 +15,13 @@ See https://hydra.cc/docs/advanced/hydra-command-line-flags/ for more options.
 """
 
 import glob
+import json
 import logging
 import os
 import pickle
 import random
 import re
+import sys
 import time
 
 import hydra
@@ -217,11 +219,23 @@ def main(conf: HydraConfig) -> None:
             time = time.time() - start_time
         )
 
-        if sampler.ab_design(): 
+        if sampler.ab_design():
             # Write out the sampled individual loop lengths
             for loop in sampler.loop_map:
                 # Sum the values of each boolean loop map
                 trb[f"{loop.upper()}_len"] = len(sampler.loop_map[loop])
+
+            # Save motif scaffolding info if present
+            motif_trb = sampler.get_motif_trb_data()
+            if motif_trb is not None:
+                trb.update(motif_trb)
+
+                # Write motif fixed positions JSON for ProteinMPNN
+                motif_fixed = sampler.get_motif_fixed_positions_for_mpnn()
+                motif_json_path = f'{out_prefix}_motif_fixed.json'
+                with open(motif_json_path, 'w') as mf:
+                    json.dump(motif_fixed, mf)
+                trb['motif_fixed_positions_file'] = motif_json_path
 
         if sampler.ab_design() and torch.any(sampler.ab_item.target_mask) and torch.any(sampler.ab_item.hotspots):
             # Loop through the hotspots, find the closest loop residue by Cb distance

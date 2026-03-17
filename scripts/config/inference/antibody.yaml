@@ -21,3 +21,6 @@ antibody:
   terminate_bad_targeting: null
   hotspot_termination_threshold: 10
   hotspot_termination_failures_permitted: 20
+  # Aromatic motif scaffolding
+  motif_pdb: null              # Path to combined motif+target PDB (last chain = motif)
+  motif_cdr_loop: 'H3'         # CDR loop to scaffold motif into (flanks auto-derived from design_loops)

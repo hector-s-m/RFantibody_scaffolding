@@ -231,6 +231,25 @@ class AbPose():
             loop_masks={l: pose['loop_masks'][l][mask_dict[chain]] for l in self.cdr_names}
             item_dict[chain].loop_masks=loop_masks         
 
+    def target_from_motif_data(self, motif_data: dict) -> None:
+        '''
+        Load the target chain from parsed motif data (from motif_loader).
+
+        This allows the combined motif+target PDB to serve as the target
+        source, so users don't need to provide a separate --target file.
+        '''
+        n_res = len(motif_data['target_seq'])
+        pdb_idx = np.array(motif_data['target_pdb_idx'])
+
+        self.T.xyz = motif_data['target_xyz']
+        self.T.mask = motif_data['target_mask']
+        self.T.seq = motif_data['target_seq']
+        self.T.pdb_idx = pdb_idx
+
+        # Target has no CDR loops — set all masks to zero
+        loop_masks = {l: np.zeros(n_res, dtype=bool) for l in self.cdr_names}
+        self.T.loop_masks = loop_masks
+
     def target_from_HLT(self, pdb_path: str) -> None:
         '''
         Parse an AbPose from an HLT-formatted PDB file. All chains in this file will
@@ -644,6 +663,83 @@ class AbPose():
                 self.L = self.update_features(self.L, self.L.loop_masks, self.L_names, sampled_lengths)
 
         # T chain will never be designed so we do not need to update that chain
+
+
+    def insert_motif_into_loop(
+        self,
+        cdr_loop: str,
+        motif_data: dict,
+        flank_n: int,
+        flank_c: int,
+    ) -> dict:
+        """
+        Place motif coordinates into a CDR loop at the position determined
+        by flank_n. The CDR loop must already be sized by adjust_loop_lengths().
+
+        The motif's xyz, seq, and mask arrays are substituted into the
+        chain's arrays at the correct positions within the loop.
+
+        Args:
+            cdr_loop: CDR loop name, e.g. 'H3'
+            motif_data: dict from motif_loader.load_motif_combined_pdb()
+            flank_n: number of designed residues before motif
+            flank_c: number of designed residues after motif
+
+        Returns:
+            dict with 'motif_global_indices' — list of global indices where
+            motif residues were placed
+        """
+        cdr_loop = cdr_loop.upper()
+        chain_letter = cdr_loop[0]  # 'H' or 'L'
+
+        if chain_letter == 'H':
+            chain_data = self.H
+        elif chain_letter == 'L':
+            chain_data = self.L
+        else:
+            raise ValueError(f"CDR loop must be on H or L chain, got {cdr_loop}")
+
+        # Find the loop positions within this chain's arrays
+        loop_mask = chain_data.loop_masks[cdr_loop]
+        loop_indices = np.where(loop_mask)[0]
+
+        if len(loop_indices) == 0:
+            raise ValueError(f"CDR loop {cdr_loop} has no residues")
+
+        motif_len = len(motif_data['motif_seq'])
+        expected_len = flank_n + motif_len + flank_c
+        if len(loop_indices) != expected_len:
+            raise ValueError(
+                f"CDR loop {cdr_loop} has {len(loop_indices)} residues but "
+                f"flank_n({flank_n}) + motif({motif_len}) + flank_c({flank_c}) "
+                f"= {expected_len}"
+            )
+
+        # Determine where in the chain to place the motif
+        motif_start_in_chain = loop_indices[flank_n]
+        motif_end_in_chain = motif_start_in_chain + motif_len
+
+        # Substitute motif coordinates and sequence
+        chain_data.xyz[motif_start_in_chain:motif_end_in_chain] = motif_data['motif_xyz']
+        chain_data.mask[motif_start_in_chain:motif_end_in_chain] = motif_data['motif_mask']
+        chain_data.seq[motif_start_in_chain:motif_end_in_chain] = motif_data['motif_seq']
+
+        # Compute global indices (H comes first, then L, then T)
+        if chain_letter == 'H':
+            global_offset = 0
+        else:
+            global_offset = self.H.seq.shape[0] if self.has_H() else 0
+
+        motif_global_indices = list(range(
+            global_offset + motif_start_in_chain,
+            global_offset + motif_end_in_chain,
+        ))
+
+        print(f"Inserted motif '{motif_data['motif_seq_str']}' into {cdr_loop} "
+              f"at chain-relative positions {motif_start_in_chain}-{motif_end_in_chain-1} "
+              f"(global {motif_global_indices[0]}-{motif_global_indices[-1]})")
+
+        return {'motif_global_indices': motif_global_indices}
 
 
     def to_diffusion_inputs(self) -> dict:

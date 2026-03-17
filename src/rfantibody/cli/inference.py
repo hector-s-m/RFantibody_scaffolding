@@ -27,8 +27,8 @@ def _resolve_path(path: Optional[Path]) -> Optional[Path]:
 # =============================================================================
 
 @click.command()
-@click.option('--target', '-t', type=click.Path(exists=True, path_type=Path), required=True,
-              help='Target PDB file (antigen)')
+@click.option('--target', '-t', type=click.Path(exists=True, path_type=Path), default=None,
+              help='Target PDB file (antigen). Optional if --motif is provided (target extracted from motif PDB).')
 @click.option('--framework', '-f', type=click.Path(exists=True, path_type=Path), required=True,
               help='Framework PDB file (antibody scaffold)')
 @click.option('--output', '-o', type=click.Path(path_type=Path), default='designs/ab_des',
@@ -53,6 +53,10 @@ def _resolve_path(path: Optional[Path]) -> Optional[Path]:
               help='Disable trajectory output files')
 @click.option('--extra', '-e', type=str, multiple=True,
               help='Extra Hydra overrides (can be specified multiple times)')
+@click.option('--motif', '-m', type=click.Path(exists=True, path_type=Path), default=None,
+              help='Combined motif+target PDB for motif scaffolding (last chain = motif)')
+@click.option('--motif-cdr', type=str, default='H3',
+              help='CDR loop to scaffold motif into (default: H3)')
 def rfdiffusion(
     target: Path,
     framework: Path,
@@ -66,7 +70,9 @@ def rfdiffusion(
     final_step: int,
     deterministic: bool,
     no_trajectory: bool,
-    extra: tuple
+    extra: tuple,
+    motif: Optional[Path],
+    motif_cdr: str,
 ):
     """Run RFdiffusion antibody design.
 
@@ -85,7 +91,16 @@ def rfdiffusion(
     \b
         # Output to Quiver file
         rfdiffusion -t antigen.pdb -f framework.pdb -q designs.qv -n 100
+
+    \b
+        # Motif scaffolding into H3 (target extracted from motif PDB)
+        rfdiffusion -f framework.pdb -m motif_combined.pdb -l "H3:10-16" -n 10
     """
+    # Validate: target is required unless motif is provided
+    if target is None and motif is None:
+        click.echo('Error: --target is required unless --motif is provided (which includes the target)', err=True)
+        sys.exit(1)
+
     # Resolve all paths to absolute (subprocess runs in different cwd)
     target = _resolve_path(target)
     framework = _resolve_path(framework)
@@ -102,8 +117,9 @@ def rfdiffusion(
     # Build command
     cmd = ['python', str(script_path), '--config-name', 'antibody']
 
-    # Required parameters
-    cmd.append(f'antibody.target_pdb={target}')
+    # Target (optional when motif provides it)
+    if target:
+        cmd.append(f'antibody.target_pdb={target}')
     cmd.append(f'antibody.framework_pdb={framework}')
 
     # Output
@@ -147,14 +163,23 @@ def rfdiffusion(
     if no_trajectory:
         cmd.append('inference.write_trajectory=False')
 
+    # Motif scaffolding
+    if motif:
+        motif = _resolve_path(motif)
+        cmd.append(f'antibody.motif_pdb={motif}')
+        cmd.append(f'antibody.motif_cdr_loop={motif_cdr}')
+
     # Extra overrides
     for override in extra:
         cmd.append(override)
 
     click.echo(f'Running RFdiffusion with {num_designs} designs...')
-    click.echo(f'Target: {target}')
+    if target:
+        click.echo(f'Target: {target}')
     click.echo(f'Framework: {framework}')
     click.echo(f'Design loops: {design_loops}')
+    if motif:
+        click.echo(f'Motif: {motif} -> CDR {motif_cdr}')
 
     result = subprocess.run(cmd, cwd=str(PathConfig.PROJECT_ROOT))
     sys.exit(result.returncode)
