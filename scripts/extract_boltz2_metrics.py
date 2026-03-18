@@ -316,8 +316,15 @@ def compute_motif_rmsd(
                     pred_motif_coords.append(pred_coords[i])
                     break
 
+    total_expected = sum(len(pos) for pos in motif_positions.values())
     if len(des_motif_coords) == 0 or len(pred_motif_coords) == 0:
+        print(f'  Warning: Motif RMSD skipped — found {len(des_motif_coords)}/{total_expected} '
+              f'designed, {len(pred_motif_coords)}/{total_expected} predicted motif residues')
         return None
+
+    if len(des_motif_coords) != len(pred_motif_coords):
+        print(f'  Warning: Motif residue count mismatch — designed={len(des_motif_coords)}, '
+              f'predicted={len(pred_motif_coords)} (expected {total_expected})')
 
     n = min(len(des_motif_coords), len(pred_motif_coords))
     des_arr = np.array(des_motif_coords[:n])

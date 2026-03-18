@@ -59,6 +59,7 @@ NUM_DESIGNS=100
 MOTIF_CDR="H3"
 DESIGN_LOOPS=""                 # Auto-set based on framework if empty
 HOTSPOTS=""
+# Model was trained at T=200. Use T=200 for best quality; T=50 for 4x speedup.
 DIFFUSER_T=200
 
 # AntiBMPNN parameters
@@ -328,7 +329,7 @@ BOLTZ_CMD=(boltz predict "$OUTPUT_DIR/boltz2_input"
     --diffusion_samples "$DIFFUSION_SAMPLES"
     --output_format pdb
     --use_msa_server
-    "--msa_server_url=$MSA_SERVER_URL"
+    --msa_server_url "$MSA_SERVER_URL"
     --use_potentials
     --write_full_pae
     --write_full_pde
