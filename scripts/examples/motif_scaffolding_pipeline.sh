@@ -28,12 +28,16 @@
 #   --hotspots STR          Target hotspot residues
 #   --num-seqs N            Sequences per backbone (default: 4)
 #   --temperature FLOAT     Sampling temperature (default: 0.2)
-#   --diffusion-samples N   Boltz2 diffusion samples (default: 1)
+#   --diffusion-samples N   Boltz2 diffusion samples per design (default: 3)
 #   --boltz-cache PATH      Boltz2 cache directory
 #   --diffuser-t N          Diffusion timesteps (default: 50)
 # ============================================================================
 
 set -e  # Exit on error
+
+# Track current step for error diagnostics
+CURRENT_STEP="init"
+trap 'echo ""; echo "ERROR: Pipeline failed during [$CURRENT_STEP] (line $LINENO)" >&2; exit 1' ERR
 
 # Initialize conda for this shell (required for conda activate in scripts)
 eval "$(conda shell.bash hook)"
@@ -62,7 +66,7 @@ NUM_SEQS=4
 SAMPLING_TEMP=0.2
 
 # Boltz2 parameters
-DIFFUSION_SAMPLES=1
+DIFFUSION_SAMPLES=3
 MSA_SERVER_URL="http://a3m-2023.mmseqs.com"
 BOLTZ_CACHE=""
 
@@ -89,7 +93,7 @@ Optional:
   --hotspots STR          Target hotspot residues (e.g. "A100,A105")
   --num-seqs N            Sequences per backbone (default: $NUM_SEQS)
   --temperature FLOAT     Sampling temperature (default: $SAMPLING_TEMP)
-  --diffusion-samples N   Boltz2 diffusion samples (default: $DIFFUSION_SAMPLES)
+  --diffusion-samples N   Boltz2 diffusion samples per design (default: $DIFFUSION_SAMPLES)
   --boltz-cache PATH      Boltz2 cache directory
   --diffuser-t N          Diffusion timesteps (default: $DIFFUSER_T)
   -h, --help              Show this help
@@ -192,6 +196,8 @@ START_PIPELINE=$(date +%s)
 # STEP 1: RFdiffusion with motif scaffolding (RFantibody env)
 # ============================================================================
 
+CURRENT_STEP="Step 1/3 — RFdiffusion backbone design"
+
 echo ""
 echo "[Step 1/3] Running RFdiffusion with motif scaffolding..."
 echo "  - Designing $NUM_DESIGNS backbones"
@@ -241,17 +247,32 @@ echo "[Step 1/3] RFdiffusion complete."
 # STEP 2: AntiBMPNN with motif fixed positions (RFantibody env)
 # ============================================================================
 
+CURRENT_STEP="Step 2/3 — AntiBMPNN sequence design"
+
 echo ""
 echo "[Step 2/3] Running AntiBMPNN / ProteinMPNN..."
 echo "  - Generating $NUM_SEQS sequences per backbone"
 echo "  - Motif residues will remain fixed"
 echo "  - Designing loops: $LOOP_STRING"
 
+DESIGN_COUNT=0
 for design_pdb in "$OUTPUT_DIR"/designs/ab_des_*.pdb; do
+    DESIGN_COUNT=$((DESIGN_COUNT + 1))
+done
+echo "  - Processing $DESIGN_COUNT backbone designs"
+
+MPNN_IDX=0
+for design_pdb in "$OUTPUT_DIR"/designs/ab_des_*.pdb; do
+    MPNN_IDX=$((MPNN_IDX + 1))
     base=$(basename "$design_pdb" .pdb)
     motif_json="$OUTPUT_DIR/designs/${base}_motif_fixed.json"
 
+    # Create a runlist with just this one design (so -pdbdir processes only it)
+    RUNLIST_FILE="$OUTPUT_DIR/designs/_runlist_tmp.txt"
+    echo "$base" > "$RUNLIST_FILE"
+
     MPNN_ARGS="-pdbdir $OUTPUT_DIR/designs -outpdbdir $OUTPUT_DIR/mpnn_designs \
+        -runlist $RUNLIST_FILE \
         -loop_string $LOOP_STRING \
         -seqs_per_struct $NUM_SEQS \
         -temperature $SAMPLING_TEMP"
@@ -260,10 +281,13 @@ for design_pdb in "$OUTPUT_DIR"/designs/ab_des_*.pdb; do
         MPNN_ARGS="$MPNN_ARGS -motif_fixed_positions $motif_json"
     fi
 
+    echo "  [$MPNN_IDX/$DESIGN_COUNT] $base"
     python scripts/proteinmpnn_interface_design.py $MPNN_ARGS
 done
+rm -f "$OUTPUT_DIR/designs/_runlist_tmp.txt"
 
-echo "[Step 2/3] AntiBMPNN complete."
+MPNN_COUNT=$(find "$OUTPUT_DIR/mpnn_designs" -name "*.pdb" 2>/dev/null | wc -l)
+echo "[Step 2/3] AntiBMPNN complete. Generated $MPNN_COUNT sequence designs."
 
 conda deactivate
 
@@ -271,42 +295,62 @@ conda deactivate
 # STEP 3: Boltz2 — Structure prediction + scoring (boltz_2.2.1 env)
 # ============================================================================
 
+CURRENT_STEP="Step 3a/3 — Prepare Boltz2 YAML inputs"
+
 echo ""
 echo "[Step 3/3] Running Boltz2 structure prediction + scoring..."
 echo "  - Converting PDBs to Boltz2 YAML format"
-echo "  - Predicting with $DIFFUSION_SAMPLES diffusion sample(s)"
+echo "  - Predicting with $DIFFUSION_SAMPLES diffusion sample(s) per design"
 
 # 3a. Prepare Boltz2 YAML inputs (RFantibody env — only needs pyyaml)
+conda deactivate 2>/dev/null || true
 conda activate "$RFANTIBODY_ENV"
 
 python scripts/prepare_boltz2_input.py \
     -i "$OUTPUT_DIR/mpnn_designs" \
     -o "$OUTPUT_DIR/boltz2_input"
 
-conda deactivate
+YAML_COUNT=$(find "$OUTPUT_DIR/boltz2_input" -name "*.yaml" 2>/dev/null | wc -l)
+echo "  Generated $YAML_COUNT Boltz2 YAML input files"
+
+conda deactivate 2>/dev/null || true
 
 # 3b. Run Boltz2 prediction (boltz_2.2.1 env)
-conda activate "$BOLTZ2_ENV"
+CURRENT_STEP="Step 3b/3 — Boltz2 structure prediction"
 
-BOLTZ_CMD="boltz predict \"$OUTPUT_DIR/boltz2_input\" \
-    --out_dir \"$OUTPUT_DIR/boltz2_output\" \
-    --diffusion_samples $DIFFUSION_SAMPLES \
-    --use_msa_server \
-    --msa_server_url=$MSA_SERVER_URL \
-    --use_potentials \
-    --write_full_pae \
-    --write_full_pde"
+conda activate "$BOLTZ2_ENV"
+echo "  Activated environment: $BOLTZ2_ENV"
+echo "  boltz location: $(which boltz 2>/dev/null || echo 'NOT FOUND — is boltz installed in $BOLTZ2_ENV?')"
+
+BOLTZ_CMD=(boltz predict "$OUTPUT_DIR/boltz2_input"
+    --out_dir "$OUTPUT_DIR/boltz2_output"
+    --diffusion_samples "$DIFFUSION_SAMPLES"
+    --output_format pdb
+    --use_msa_server
+    "--msa_server_url=$MSA_SERVER_URL"
+    --use_potentials
+    --write_full_pae
+    --write_full_pde
+)
 
 if [ -n "$BOLTZ_CACHE" ]; then
-    BOLTZ_CMD="$BOLTZ_CMD --cache \"$BOLTZ_CACHE\""
+    BOLTZ_CMD+=(--cache "$BOLTZ_CACHE")
 fi
 
-echo "Running: $BOLTZ_CMD"
-eval $BOLTZ_CMD
+echo "  Running: ${BOLTZ_CMD[*]}"
+BOLTZ_START=$(date +%s)
 
-conda deactivate
+"${BOLTZ_CMD[@]}"
+
+BOLTZ_END=$(date +%s)
+BOLTZ_ELAPSED=$(( (BOLTZ_END - BOLTZ_START) / 60 ))
+echo "  Boltz2 prediction complete (${BOLTZ_ELAPSED} min)"
+
+conda deactivate 2>/dev/null || true
 
 # 3c. Extract metrics (RFantibody env — needs numpy + pandas)
+CURRENT_STEP="Step 3c/3 — Extract Boltz2 metrics"
+
 conda activate "$RFANTIBODY_ENV"
 
 python scripts/extract_boltz2_metrics.py \
@@ -315,7 +359,7 @@ python scripts/extract_boltz2_metrics.py \
     -o "$OUTPUT_DIR/boltz2_metrics.csv" \
     --rank-by ipTM
 
-conda deactivate
+conda deactivate 2>/dev/null || true
 
 echo "[Step 3/3] Boltz2 complete."
 
