@@ -257,6 +257,78 @@ def compute_binder_rmsd(
 
 
 # =============================================================================
+# Motif RMSD (designed vs Boltz2-predicted motif positions)
+# =============================================================================
+
+def compute_motif_rmsd(
+    designed_pdb: Path,
+    predicted_pdb: Path,
+    motif_fixed_json: Path,
+) -> float | None:
+    """Compute CA RMSD of motif residues between designed and predicted structures.
+
+    Uses the motif_fixed.json (from RFdiffusion) to identify which residues
+    are motif positions. Computes RMSD only for those positions.
+
+    Args:
+        designed_pdb: PDB from AntiBMPNN (input to Boltz2).
+        predicted_pdb: Structure predicted by Boltz2.
+        motif_fixed_json: JSON file with motif fixed positions
+            (e.g., {"H": [45, 46, 47, 48]}).
+
+    Returns:
+        RMSD in Angstroms, or None if computation fails.
+    """
+    with open(motif_fixed_json) as f:
+        motif_positions = json.load(f)
+
+    # Parse designed structure
+    if str(designed_pdb).endswith('.cif'):
+        des_coords, des_chains, des_resnums = parse_cif_ca_coords(designed_pdb)
+    else:
+        des_coords, des_chains, des_resnums = parse_ca_coords(designed_pdb)
+
+    # Parse predicted structure
+    if str(predicted_pdb).endswith('.cif'):
+        pred_coords, pred_chains, pred_resnums = parse_cif_ca_coords(predicted_pdb)
+    else:
+        pred_coords, pred_chains, pred_resnums = parse_ca_coords(predicted_pdb)
+
+    # Boltz2 remaps chains (H→A, L→B, T→C), so build both mappings
+    chain_remap = {'H': 'A', 'L': 'B', 'T': 'C'}
+
+    des_motif_coords = []
+    pred_motif_coords = []
+
+    for chain, positions in motif_positions.items():
+        # Find motif residues in designed structure (uses original chain IDs)
+        for pos in positions:
+            for i, (c, r) in enumerate(zip(des_chains, des_resnums)):
+                if c == chain and r == pos:
+                    des_motif_coords.append(des_coords[i])
+                    break
+
+        # Find motif residues in predicted structure (may use remapped chain IDs)
+        pred_chain = chain_remap.get(chain, chain)
+        for pos in positions:
+            for i, (c, r) in enumerate(zip(pred_chains, pred_resnums)):
+                if c == pred_chain and r == pos:
+                    pred_motif_coords.append(pred_coords[i])
+                    break
+
+    if len(des_motif_coords) == 0 or len(pred_motif_coords) == 0:
+        return None
+
+    n = min(len(des_motif_coords), len(pred_motif_coords))
+    des_arr = np.array(des_motif_coords[:n])
+    pred_arr = np.array(pred_motif_coords[:n])
+
+    diff = des_arr - pred_arr
+    rmsd = float(np.sqrt(np.mean(np.sum(diff ** 2, axis=1))))
+    return rmsd
+
+
+# =============================================================================
 # ipSAE calculation (Dunbrack method)
 # =============================================================================
 
@@ -516,6 +588,7 @@ def extract_metrics_for_prediction(
 
     # --- Binder RMSD (designed vs predicted) ---
     result['binder_RMSD'] = None
+    result['motif_RMSD'] = None
     if designed_pdb_dir is not None and struct_path is not None:
         # Try to find matching designed PDB
         designed_pdb = designed_pdb_dir / f'{stem}.pdb'
@@ -532,6 +605,20 @@ def extract_metrics_for_prediction(
             except Exception as e:
                 print(f'  Warning: RMSD failed for {stem}: {e}')
 
+            # --- Motif RMSD ---
+            # Look for motif_fixed.json from RFdiffusion output
+            # Naming: ab_des_N_dldesign_M → motif JSON is ab_des_N_motif_fixed.json
+            base_design = stem.split('_dldesign_')[0] if '_dldesign_' in stem else stem
+            designs_dir = designed_pdb_dir.parent / 'designs'
+            motif_json = designs_dir / f'{base_design}_motif_fixed.json'
+            if motif_json.exists():
+                try:
+                    mrmsd = compute_motif_rmsd(designed_pdb, struct_path, motif_json)
+                    if mrmsd is not None:
+                        result['motif_RMSD'] = round(mrmsd, 3)
+                except Exception as e:
+                    print(f'  Warning: Motif RMSD failed for {stem}: {e}')
+
     return result
 
 
@@ -542,7 +629,7 @@ def extract_metrics_for_prediction(
 def main():
     parser = argparse.ArgumentParser(
         description='Extract Boltz2 metrics: ipTM, iPAE, pLDDT, iPLDDT, '
-                    'ipSAE, pDockQ, pDockQ2, LIS, binder RMSD'
+                    'ipSAE, pDockQ, pDockQ2, LIS, binder RMSD, motif RMSD'
     )
     parser.add_argument(
         '-i', '--input-dir', type=str, required=True,
@@ -606,7 +693,7 @@ def main():
 
     # Print top 10
     display_cols = ['design']
-    for col in ['ipTM', 'ipSAE', 'pDockQ', 'pDockQ2', 'LIS', 'pLDDT', 'iPLDDT', 'iPAE', 'binder_RMSD']:
+    for col in ['ipTM', 'ipSAE', 'pDockQ', 'pDockQ2', 'LIS', 'pLDDT', 'iPLDDT', 'iPAE', 'binder_RMSD', 'motif_RMSD']:
         if col in df.columns:
             display_cols.append(col)
 

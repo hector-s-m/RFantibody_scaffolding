@@ -474,9 +474,19 @@ class AbSampler(Sampler):
 
         self.binderlen = self.pose.binder_len()
 
-        #### 4) Parse hotspots
+        #### 4) Parse hotspots — auto-generate from motif contacts if none provided
         ##########################################
-        self.ab_item.hotspots = self.pose.parse_hotspots(self.ppi_conf.hotspot_res)
+        if self.ppi_conf.hotspot_res is None and self.motif_global_indices is not None:
+            # Auto-detect target residues near the motif as hotspots
+            auto_hotspots = self._auto_generate_motif_hotspots(contact_dist=10.0)
+            if auto_hotspots:
+                print(f"Auto-generated {len(auto_hotspots)} hotspot(s) from motif-target contacts: {auto_hotspots}")
+                self.ab_item.hotspots = self.pose.parse_hotspots(auto_hotspots)
+            else:
+                print("WARNING: No target residues found within contact distance of motif")
+                self.ab_item.hotspots = self.pose.parse_hotspots(None)
+        else:
+            self.ab_item.hotspots = self.pose.parse_hotspots(self.ppi_conf.hotspot_res)
 
         self.ab_item.inputs   = self.pose.to_diffusion_inputs()
 
@@ -597,6 +607,47 @@ class AbSampler(Sampler):
         retval = [i.to(self.device) for i in retval]
 
         return retval
+
+    def _auto_generate_motif_hotspots(self, contact_dist: float = 10.0) -> list[str]:
+        """Auto-detect target residues near the motif as hotspot residues.
+
+        Computes CA-CA distances between motif residues and target residues,
+        returning target residues within contact_dist as hotspot strings.
+
+        Args:
+            contact_dist: CA-CA distance cutoff in Angstroms (default 10.0).
+
+        Returns:
+            List of hotspot strings, e.g. ['T5', 'T12', 'T15'].
+        """
+        if not self.pose.has_T() or self.motif_global_indices is None:
+            return []
+
+        # Get motif CA coordinates from the pose's full xyz
+        inputs = self.pose.to_diffusion_inputs()
+        all_xyz = inputs.xyz_true.numpy()  # [L, 27, 3]
+
+        motif_ca = all_xyz[self.motif_global_indices, 1, :]  # [M, 3] CA atoms
+
+        # Get target CA coordinates
+        binder_len = self.pose.binder_len()
+        target_ca = all_xyz[binder_len:, 1, :]  # [T, 3] CA atoms
+
+        # Compute pairwise distances
+        # motif_ca: [M, 3], target_ca: [T, 3]
+        diff = target_ca[:, None, :] - motif_ca[None, :, :]  # [T, M, 3]
+        dists = np.sqrt((diff ** 2).sum(axis=2))  # [T, M]
+        min_dists = dists.min(axis=1)  # [T] min distance to any motif residue
+
+        # Find target residues within contact distance
+        contact_mask = min_dists < contact_dist
+        hotspots = []
+        for i, in_contact in enumerate(contact_mask):
+            if in_contact:
+                chain, resnum = self.pose.T.pdb_idx[i]
+                hotspots.append(f"{chain}{resnum}")
+
+        return hotspots
 
     def has_motif(self) -> bool:
         """Whether motif scaffolding is active for this design."""

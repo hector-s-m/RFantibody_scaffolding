@@ -59,10 +59,10 @@ NUM_DESIGNS=100
 MOTIF_CDR="H3"
 DESIGN_LOOPS=""                 # Auto-set based on framework if empty
 HOTSPOTS=""
-DIFFUSER_T=50
+DIFFUSER_T=200
 
 # AntiBMPNN parameters
-NUM_SEQS=4
+NUM_SEQS=8
 SAMPLING_TEMP=0.2
 
 # Boltz2 parameters
@@ -308,7 +308,8 @@ conda activate "$RFANTIBODY_ENV"
 
 python scripts/prepare_boltz2_input.py \
     -i "$OUTPUT_DIR/mpnn_designs" \
-    -o "$OUTPUT_DIR/boltz2_input"
+    -o "$OUTPUT_DIR/boltz2_input" \
+    --remap-chains
 
 YAML_COUNT=$(find "$OUTPUT_DIR/boltz2_input" -name "*.yaml" 2>/dev/null | wc -l)
 echo "  Generated $YAML_COUNT Boltz2 YAML input files"
@@ -380,7 +381,7 @@ echo "  2. AntiBMPNN sequences:   $OUTPUT_DIR/mpnn_designs/"
 echo "  3. Boltz2 structures:     $OUTPUT_DIR/boltz2_output/"
 echo "  4. Ranked metrics CSV:    $OUTPUT_DIR/boltz2_metrics.csv"
 echo ""
-echo "Metrics: ipTM, ipSAE, pDockQ, pDockQ2, LIS, pLDDT, iPLDDT, iPAE, binder_RMSD"
+echo "Metrics: ipTM, ipSAE, pDockQ, pDockQ2, LIS, pLDDT, iPLDDT, iPAE, binder_RMSD, motif_RMSD"
 echo ""
 echo "Review boltz2_metrics.csv to identify top candidates."
 echo "=============================================="
