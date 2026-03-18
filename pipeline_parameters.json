@@ -1,0 +1,31 @@
+{
+    "_comment": "Aromatic Motif Scaffolding Pipeline — edit parameters here or override via CLI flags",
+
+    "framework_type": "Nb",
+    "framework_pdb": "inputs/Nb.pdb",
+    "motif_pdb": "inputs/target+motif.pdb",
+    "output_dir": "output_Nb",
+
+    "conda_env_rfantibody": "RFantibody",
+    "conda_env_boltz2": "boltz_2.2.1",
+
+    "rfdiffusion": {
+        "num_designs": 100,
+        "motif_cdr": "H3",
+        "design_loops": "H1:,H2:,H3:10-16",
+        "hotspots": "",
+        "diffuser_T": 200
+    },
+
+    "mpnn": {
+        "num_seqs": 4,
+        "sampling_temp": 0.2
+    },
+
+    "boltz2": {
+        "diffusion_samples": 3,
+        "batch_size": 6,
+        "msa_server_url": "http://a3m-2023.mmseqs.com",
+        "cache": ""
+    }
+}
