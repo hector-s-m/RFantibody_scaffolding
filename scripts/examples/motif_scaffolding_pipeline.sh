@@ -29,8 +29,9 @@
 #   --num-seqs N            Sequences per backbone (default: 4)
 #   --temperature FLOAT     Sampling temperature (default: 0.2)
 #   --diffusion-samples N   Boltz2 diffusion samples per design (default: 3)
+#   --boltz-batch-size N    Boltz2 parallel predictions per batch (default: 6)
 #   --boltz-cache PATH      Boltz2 cache directory
-#   --diffuser-t N          Diffusion timesteps (default: 50)
+#   --diffuser-t N          Diffusion timesteps (default: 200)
 # ============================================================================
 
 set -e  # Exit on error
@@ -63,11 +64,12 @@ HOTSPOTS=""
 DIFFUSER_T=200
 
 # AntiBMPNN parameters
-NUM_SEQS=8
+NUM_SEQS=4
 SAMPLING_TEMP=0.2
 
 # Boltz2 parameters
 DIFFUSION_SAMPLES=3
+BOLTZ_BATCH_SIZE=6             # Parallel predictions per batch (GPU time-slicing)
 MSA_SERVER_URL="http://a3m-2023.mmseqs.com"
 BOLTZ_CACHE=""
 
@@ -95,6 +97,7 @@ Optional:
   --num-seqs N            Sequences per backbone (default: $NUM_SEQS)
   --temperature FLOAT     Sampling temperature (default: $SAMPLING_TEMP)
   --diffusion-samples N   Boltz2 diffusion samples per design (default: $DIFFUSION_SAMPLES)
+  --boltz-batch-size N    Boltz2 parallel predictions per GPU batch (default: $BOLTZ_BATCH_SIZE)
   --boltz-cache PATH      Boltz2 cache directory
   --diffuser-t N          Diffusion timesteps (default: $DIFFUSER_T)
   -h, --help              Show this help
@@ -114,6 +117,7 @@ while [[ $# -gt 0 ]]; do
         --num-seqs)          NUM_SEQS="$2"; shift 2 ;;
         --temperature)       SAMPLING_TEMP="$2"; shift 2 ;;
         --diffusion-samples) DIFFUSION_SAMPLES="$2"; shift 2 ;;
+        --boltz-batch-size)  BOLTZ_BATCH_SIZE="$2"; shift 2 ;;
         --boltz-cache)       BOLTZ_CACHE="$2"; shift 2 ;;
         --diffuser-t)        DIFFUSER_T="$2"; shift 2 ;;
         -h|--help)           print_usage; exit 0 ;;
@@ -301,7 +305,7 @@ CURRENT_STEP="Step 3a/3 — Prepare Boltz2 YAML inputs"
 echo ""
 echo "[Step 3/3] Running Boltz2 structure prediction + scoring..."
 echo "  - Converting PDBs to Boltz2 YAML format"
-echo "  - Predicting with $DIFFUSION_SAMPLES diffusion sample(s) per design"
+echo "  - Predicting with $DIFFUSION_SAMPLES diffusion sample(s) per design (batch=$BOLTZ_BATCH_SIZE parallel)"
 
 # 3a. Prepare Boltz2 YAML inputs (RFantibody env — only needs pyyaml)
 conda deactivate 2>/dev/null || true
@@ -323,26 +327,23 @@ CURRENT_STEP="Step 3b/3 — Boltz2 structure prediction"
 conda activate "$BOLTZ2_ENV"
 echo "  Activated environment: $BOLTZ2_ENV"
 echo "  boltz location: $(which boltz 2>/dev/null || echo 'NOT FOUND — is boltz installed in $BOLTZ2_ENV?')"
+echo "  Parallel batch size: $BOLTZ_BATCH_SIZE"
 
-BOLTZ_CMD=(boltz predict "$OUTPUT_DIR/boltz2_input"
-    --out_dir "$OUTPUT_DIR/boltz2_output"
-    --diffusion_samples "$DIFFUSION_SAMPLES"
-    --output_format pdb
-    --use_msa_server
-    --msa_server_url "$MSA_SERVER_URL"
-    --use_potentials
-    --write_full_pae
-    --write_full_pde
+BOLTZ_PARALLEL_CMD=(python scripts/run_boltz2_parallel.py
+    -i "$OUTPUT_DIR/boltz2_input"
+    -o "$OUTPUT_DIR/boltz2_output"
+    --samples "$DIFFUSION_SAMPLES"
+    --batch-size "$BOLTZ_BATCH_SIZE"
+    --msa-server-url "$MSA_SERVER_URL"
 )
 
 if [ -n "$BOLTZ_CACHE" ]; then
-    BOLTZ_CMD+=(--cache "$BOLTZ_CACHE")
+    BOLTZ_PARALLEL_CMD+=(--cache "$BOLTZ_CACHE")
 fi
 
-echo "  Running: ${BOLTZ_CMD[*]}"
 BOLTZ_START=$(date +%s)
 
-"${BOLTZ_CMD[@]}"
+"${BOLTZ_PARALLEL_CMD[@]}"
 
 BOLTZ_END=$(date +%s)
 BOLTZ_ELAPSED=$(( (BOLTZ_END - BOLTZ_START) / 60 ))
