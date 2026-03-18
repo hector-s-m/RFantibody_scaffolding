@@ -732,6 +732,22 @@ class AbSampler(Sampler):
             tors_t_1 = torch.ones((self.mask_str.shape[-1], 10, 2))
             px0 = px0.to(x_t.device)
 
+        # Fix motif coordinates at EVERY step including the final one.
+        # At intermediate steps, get_next_pose() handles this via diffusion_mask,
+        # but the final step (t == final_step) uses raw px0 prediction which can
+        # drift the motif away from the target. Force motif coords back to the
+        # true values carried in x_t (which are never noised/denoised).
+        if self.motif_global_indices is not None:
+            motif_idx = torch.tensor(self.motif_global_indices, device=x_t.device)
+            # Log how far the model's prediction drifted from true motif coords
+            motif_ca_pred = x_t_1[motif_idx, 1, :]  # CA atoms of model prediction
+            motif_ca_true = x_t[motif_idx, 1, :]     # CA atoms of true (fixed) coords
+            motif_drift = torch.sqrt(((motif_ca_pred - motif_ca_true) ** 2).sum(-1).mean())
+            self._log.info(f'Timestep {t}: motif CA drift = {motif_drift:.3f} Å (corrected)')
+            x_t_1[motif_idx] = x_t[motif_idx]
+            # Also fix the motif in px0 so trajectories/visualization are consistent
+            px0[motif_idx] = x_t[motif_idx]
+
         return px0, x_t_1, seq_t_1, tors_t_1, plddt
 
 
