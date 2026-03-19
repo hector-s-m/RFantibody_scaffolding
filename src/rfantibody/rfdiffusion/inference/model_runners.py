@@ -821,8 +821,9 @@ class AbSampler(Sampler):
             # can cause small errors. This ensures exact motif placement.
             motif_ca_pred = x_t_1[motif_idx, 1, :]
             motif_drift = float(torch.sqrt(((motif_ca_pred - true_motif_ca) ** 2).sum(-1).mean()))
-            x_t_1[motif_idx] = true_motif_coords
-            px0[motif_idx] = true_motif_coords
+            n_atoms = x_t_1.shape[1]  # 14 or 27 depending on stage
+            x_t_1[motif_idx] = true_motif_coords[:, :n_atoms, :]
+            px0[motif_idx] = true_motif_coords[:, :n_atoms, :]
 
             # Track boundary distances for diagnostics
             all_ca = x_t_1[:, 1, :]
