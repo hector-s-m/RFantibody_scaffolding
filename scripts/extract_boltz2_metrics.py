@@ -66,38 +66,71 @@ def find_predictions(output_dir: Path) -> list[tuple[str, Path]]:
 # File loaders
 # =============================================================================
 
-def load_confidence_json(pred_dir: Path, stem: str) -> dict | None:
-    """Load Boltz2 confidence JSON."""
-    candidates = [pred_dir / f'confidence_{stem}_model_0.json']
-    candidates.extend(pred_dir.glob('confidence_*_model_0.json'))
-    for path in candidates:
-        if path.exists():
-            with open(path) as f:
-                return json.load(f)
+def pick_best_model(pred_dir: Path, stem: str) -> int:
+    """Pick the best diffusion sample by confidence_score.
+
+    Boltz2 produces model_0, model_1, ... model_N. This function loads
+    all confidence JSONs and returns the model index with the highest
+    confidence_score.
+
+    Returns:
+        Best model index (e.g. 0, 1, 2). Returns 0 as fallback.
+    """
+    best_idx = 0
+    best_score = -1.0
+    for json_path in sorted(pred_dir.glob(f'confidence_{stem}_model_*.json')):
+        try:
+            with open(json_path) as f:
+                data = json.load(f)
+            score = data.get('confidence_score', -1.0)
+            # Extract model index from filename
+            name = json_path.stem  # confidence_{stem}_model_N
+            idx = int(name.split('_model_')[-1])
+            if score is not None and score > best_score:
+                best_score = score
+                best_idx = idx
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return best_idx
+
+
+def load_confidence_json(pred_dir: Path, stem: str, model_idx: int = 0) -> dict | None:
+    """Load Boltz2 confidence JSON for a specific model."""
+    path = pred_dir / f'confidence_{stem}_model_{model_idx}.json'
+    if path.exists():
+        with open(path) as f:
+            return json.load(f)
+    # Fallback: try any model
+    for candidate in sorted(pred_dir.glob(f'confidence_{stem}_model_*.json')):
+        with open(candidate) as f:
+            return json.load(f)
     return None
 
 
-def load_npz(pred_dir: Path, prefix: str, stem: str, key: str) -> np.ndarray | None:
-    """Load a Boltz2 NPZ file."""
-    candidates = [pred_dir / f'{prefix}_{stem}_model_0.npz']
-    candidates.extend(pred_dir.glob(f'{prefix}_*_model_0.npz'))
-    for path in candidates:
-        if path.exists():
-            data = np.load(str(path))
-            if key in data:
-                return data[key]
+def load_npz(pred_dir: Path, prefix: str, stem: str, key: str, model_idx: int = 0) -> np.ndarray | None:
+    """Load a Boltz2 NPZ file for a specific model."""
+    path = pred_dir / f'{prefix}_{stem}_model_{model_idx}.npz'
+    if path.exists():
+        data = np.load(str(path))
+        if key in data:
+            return data[key]
+    # Fallback: try any model
+    for candidate in sorted(pred_dir.glob(f'{prefix}_{stem}_model_*.npz')):
+        data = np.load(str(candidate))
+        if key in data:
+            return data[key]
     return None
 
 
-def find_predicted_structure(pred_dir: Path, stem: str) -> Path | None:
-    """Find the Boltz2 predicted structure (PDB or mmCIF)."""
-    for ext in ['.pdb', '.cif']:
-        path = pred_dir / f'{stem}_model_0{ext}'
+def find_predicted_structure(pred_dir: Path, stem: str, model_idx: int = 0) -> Path | None:
+    """Find the Boltz2 predicted structure (PDB or mmCIF) for a specific model."""
+    for ext in ['.cif', '.pdb']:
+        path = pred_dir / f'{stem}_model_{model_idx}{ext}'
         if path.exists():
             return path
-    # Glob fallback
-    for ext in ['*.pdb', '*.cif']:
-        matches = list(pred_dir.glob(f'*_model_0{ext[1:]}'))
+    # Fallback: try any model
+    for ext in ['.cif', '.pdb']:
+        matches = sorted(pred_dir.glob(f'{stem}_model_*{ext}'))
         if matches:
             return matches[0]
     return None
@@ -563,14 +596,20 @@ def extract_metrics_for_prediction(
     pred_dir: Path,
     designed_pdb_dir: Path | None = None,
 ) -> dict | None:
-    """Extract all metrics for one Boltz2 prediction."""
+    """Extract all metrics for one Boltz2 prediction.
 
-    confidence = load_confidence_json(pred_dir, stem)
+    When multiple diffusion samples exist (model_0, model_1, ...),
+    picks the best model by confidence_score.
+    """
+
+    # Pick best model among diffusion samples
+    best_model = pick_best_model(pred_dir, stem)
+    confidence = load_confidence_json(pred_dir, stem, model_idx=best_model)
     if confidence is None:
         print(f'  Warning: No confidence JSON for {stem}')
         return None
 
-    result = {'design': stem}
+    result = {'design': stem, 'best_model': best_model}
 
     # --- Boltz2 JSON metrics ---
     result['ipTM'] = confidence.get('iptm')
@@ -582,12 +621,12 @@ def extract_metrics_for_prediction(
     # iPAE from JSON (if available) or compute from NPZ
     result['iPAE'] = confidence.get('complex_ipae')
 
-    # --- PAE / pLDDT from NPZ ---
-    pae = load_npz(pred_dir, 'pae', stem, 'pae')
-    plddt = load_npz(pred_dir, 'plddt', stem, 'plddt')
+    # --- PAE / pLDDT from NPZ (use best model) ---
+    pae = load_npz(pred_dir, 'pae', stem, 'pae', model_idx=best_model)
+    plddt = load_npz(pred_dir, 'plddt', stem, 'plddt', model_idx=best_model)
 
-    # Get chain IDs from predicted structure
-    struct_path = find_predicted_structure(pred_dir, stem)
+    # Get chain IDs from predicted structure (use best model)
+    struct_path = find_predicted_structure(pred_dir, stem, model_idx=best_model)
     chain_ids = None
     if struct_path is not None:
         if str(struct_path).endswith('.cif'):
@@ -754,7 +793,7 @@ def main():
     print(f'  Successful: {len(results)}, Failed: {failed}')
 
     # Print top 10
-    display_cols = ['design']
+    display_cols = ['design', 'best_model']
     for col in ['ipTM', 'ipSAE', 'pDockQ', 'pDockQ2', 'LIS', 'pLDDT', 'iPLDDT', 'iPAE', 'binder_RMSD', 'motif_RMSD']:
         if col in df.columns:
             display_cols.append(col)
