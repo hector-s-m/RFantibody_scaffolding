@@ -86,6 +86,9 @@ def check_motif_connectivity(
 ) -> list[dict]:
     """Check CA-CA distance at flank↔motif boundaries specifically.
 
+    Uses array-relative positions (not PDB residue number arithmetic)
+    to handle insertion codes and non-sequential numbering.
+
     Args:
         motif_positions: dict from motif_fixed.json, e.g. {"H": [106, 107, 108, 109]}
     """
@@ -93,36 +96,40 @@ def check_motif_connectivity(
     for chain_id, positions in motif_positions.items():
         if not positions:
             continue
-        first_motif = min(positions)
-        last_motif = max(positions)
 
-        # Find chain residues
-        chain_mask = [i for i, c in enumerate(chains) if c == chain_id]
-        resnum_to_idx = {resnums[i]: i for i in chain_mask}
+        # Build ordered list of (array_idx, resnum) for this chain
+        chain_residues = [(i, resnums[i]) for i in range(len(chains)) if chains[i] == chain_id]
+        if not chain_residues:
+            continue
 
-        # Check N-boundary: residue before first motif → first motif
-        prev_res = first_motif - 1
-        if prev_res in resnum_to_idx and first_motif in resnum_to_idx:
-            dist = float(np.linalg.norm(
-                coords[resnum_to_idx[first_motif]] - coords[resnum_to_idx[prev_res]]))
+        # Find array indices of motif residues within this chain
+        motif_set = set(positions)
+        motif_array_indices = [i for i, r in chain_residues if r in motif_set]
+        if not motif_array_indices:
+            continue
+
+        first_motif_arr = min(motif_array_indices)
+        last_motif_arr = max(motif_array_indices)
+
+        # N-boundary: array position before first motif → first motif
+        if first_motif_arr > 0 and chains[first_motif_arr - 1] == chain_id:
+            dist = float(np.linalg.norm(coords[first_motif_arr] - coords[first_motif_arr - 1]))
             if dist > max_ca_dist:
                 issues.append({
                     'boundary': 'N-flank→motif',
                     'chain': chain_id,
-                    'residues': f'{prev_res}-{first_motif}',
+                    'residues': f'{resnums[first_motif_arr-1]}-{resnums[first_motif_arr]}',
                     'distance': round(dist, 2),
                 })
 
-        # Check C-boundary: last motif → residue after last motif
-        next_res = last_motif + 1
-        if last_motif in resnum_to_idx and next_res in resnum_to_idx:
-            dist = float(np.linalg.norm(
-                coords[resnum_to_idx[next_res]] - coords[resnum_to_idx[last_motif]]))
+        # C-boundary: last motif → array position after last motif
+        if last_motif_arr < len(coords) - 1 and chains[last_motif_arr + 1] == chain_id:
+            dist = float(np.linalg.norm(coords[last_motif_arr + 1] - coords[last_motif_arr]))
             if dist > max_ca_dist:
                 issues.append({
                     'boundary': 'motif→C-flank',
                     'chain': chain_id,
-                    'residues': f'{last_motif}-{next_res}',
+                    'residues': f'{resnums[last_motif_arr]}-{resnums[last_motif_arr+1]}',
                     'distance': round(dist, 2),
                 })
 

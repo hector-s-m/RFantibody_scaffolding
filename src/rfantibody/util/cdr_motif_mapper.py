@@ -54,11 +54,11 @@ class CDRMotifMapper:
         loop_len = loop_end - loop_start
 
         flank_total = loop_len - self.motif_len
-        if flank_total < 2:
+        if flank_total < 4:
             raise ValueError(
                 f"CDR loop {self.cdr_loop} has {loop_len} residues, too short "
                 f"for motif of {self.motif_len} residues (need at least "
-                f"{self.motif_len + 2} for minimum 1 flank on each side). "
+                f"{self.motif_len + 4} for minimum 2 flanking residues on each side). "
                 f"Increase the loop length range in design_loops."
             )
 
