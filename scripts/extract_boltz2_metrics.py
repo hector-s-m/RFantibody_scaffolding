@@ -591,6 +591,12 @@ def get_chain_ids_from_pae(pae_matrix: np.ndarray, pred_dir: Path, stem: str) ->
     return chains
 
 
+def _mean_or_none(values: list) -> float | None:
+    """Mean of non-None values, or None if all are None."""
+    valid = [v for v in values if v is not None]
+    return round(sum(valid) / len(valid), 4) if valid else None
+
+
 def extract_metrics_for_prediction(
     stem: str,
     pred_dir: Path,
@@ -599,33 +605,63 @@ def extract_metrics_for_prediction(
     """Extract all metrics for one Boltz2 prediction.
 
     When multiple diffusion samples exist (model_0, model_1, ...),
-    picks the best model by confidence_score.
+    averages scalar metrics across all samples. For structure-dependent
+    metrics (RMSD, pDockQ), uses the best model by confidence_score.
     """
 
-    # Pick best model among diffusion samples
-    best_model = pick_best_model(pred_dir, stem)
-    confidence = load_confidence_json(pred_dir, stem, model_idx=best_model)
-    if confidence is None:
+    # Discover all available models
+    model_jsons = sorted(pred_dir.glob(f'confidence_{stem}_model_*.json'))
+    if not model_jsons:
         print(f'  Warning: No confidence JSON for {stem}')
         return None
 
-    result = {'design': stem, 'best_model': best_model}
+    n_models = len(model_jsons)
+    best_model = pick_best_model(pred_dir, stem)
 
-    # --- Boltz2 JSON metrics ---
-    result['ipTM'] = confidence.get('iptm')
-    result['pTM'] = confidence.get('ptm')
-    result['pLDDT'] = confidence.get('complex_plddt')
-    result['iPLDDT'] = confidence.get('complex_iplddt')
-    result['confidence_score'] = confidence.get('confidence_score')
+    # --- Collect scalar metrics from ALL models and average ---
+    json_metrics = {
+        'iptm': [], 'ptm': [], 'complex_plddt': [], 'complex_iplddt': [],
+        'confidence_score': [], 'complex_ipae': [],
+    }
+    ipsae_vals = []
+    for model_idx in range(n_models):
+        conf = load_confidence_json(pred_dir, stem, model_idx=model_idx)
+        if conf is None:
+            continue
+        for key in json_metrics:
+            val = conf.get(key)
+            if val is not None:
+                json_metrics[key].append(val)
 
-    # iPAE from JSON (if available) or compute from NPZ
-    result['iPAE'] = confidence.get('complex_ipae')
+        # ipSAE per model (needs PAE + chain IDs)
+        pae_i = load_npz(pred_dir, 'pae', stem, 'pae', model_idx=model_idx)
+        struct_i = find_predicted_structure(pred_dir, stem, model_idx=model_idx)
+        if pae_i is not None and struct_i is not None:
+            if str(struct_i).endswith('.cif'):
+                _, chains_i, _ = parse_cif_ca_coords(struct_i)
+            else:
+                _, chains_i, _ = parse_ca_coords(struct_i)
+            if len(chains_i) == pae_i.shape[0]:
+                try:
+                    ipsae_i = calculate_ipsae(pae_i, chains_i)
+                    ipsae_vals.append(ipsae_i.get('ipSAE', 0.0))
+                except Exception:
+                    pass
 
-    # --- PAE / pLDDT from NPZ (use best model) ---
+    result = {'design': stem, 'n_models': n_models, 'best_model': best_model}
+
+    # Averaged JSON metrics
+    result['ipTM'] = _mean_or_none(json_metrics['iptm'])
+    result['pTM'] = _mean_or_none(json_metrics['ptm'])
+    result['pLDDT'] = _mean_or_none(json_metrics['complex_plddt'])
+    result['iPLDDT'] = _mean_or_none(json_metrics['complex_iplddt'])
+    result['confidence_score'] = _mean_or_none(json_metrics['confidence_score'])
+    result['iPAE'] = _mean_or_none(json_metrics['complex_ipae'])
+    result['ipSAE'] = _mean_or_none(ipsae_vals)
+
+    # --- Structure-dependent metrics use BEST model ---
     pae = load_npz(pred_dir, 'pae', stem, 'pae', model_idx=best_model)
     plddt = load_npz(pred_dir, 'plddt', stem, 'plddt', model_idx=best_model)
-
-    # Get chain IDs from predicted structure (use best model)
     struct_path = find_predicted_structure(pred_dir, stem, model_idx=best_model)
     chain_ids = None
     if struct_path is not None:
@@ -634,23 +670,11 @@ def extract_metrics_for_prediction(
         else:
             _, chain_ids, _ = parse_ca_coords(struct_path)
 
-    # --- ipSAE ---
-    if pae is not None and chain_ids is not None and len(chain_ids) == pae.shape[0]:
-        try:
-            ipsae_results = calculate_ipsae(pae, chain_ids)
-            result['ipSAE'] = round(ipsae_results.get('ipSAE', 0.0), 4)
-        except Exception as e:
-            print(f'  Warning: ipSAE failed for {stem}: {e}')
-            result['ipSAE'] = None
-    else:
-        result['ipSAE'] = None
-
-    # --- pDockQ, pDockQ2, LIS ---
+    # --- pDockQ, pDockQ2, LIS (from best model structure) ---
     if (pae is not None and plddt is not None
             and struct_path is not None and chain_ids is not None
             and len(chain_ids) == pae.shape[0]):
         try:
-            # Truncate plddt if needed
             plddt_trunc = plddt[:len(chain_ids)]
             contact_scores = calculate_contact_scores(
                 struct_path, pae, plddt_trunc, chain_ids,
@@ -668,7 +692,7 @@ def extract_metrics_for_prediction(
         result['pDockQ2'] = None
         result['LIS'] = None
 
-    # --- Binder RMSD (designed vs predicted) ---
+    # --- Binder RMSD + Motif RMSD (from best model structure) ---
     result['binder_RMSD'] = None
     result['motif_RMSD'] = None
     if designed_pdb_dir is not None and struct_path is not None:
@@ -793,7 +817,7 @@ def main():
     print(f'  Successful: {len(results)}, Failed: {failed}')
 
     # Print top 10
-    display_cols = ['design', 'best_model']
+    display_cols = ['design', 'n_models']
     for col in ['ipTM', 'ipSAE', 'pDockQ', 'pDockQ2', 'LIS', 'pLDDT', 'iPLDDT', 'iPAE', 'binder_RMSD', 'motif_RMSD']:
         if col in df.columns:
             display_cols.append(col)
