@@ -504,15 +504,22 @@ class AbSampler(Sampler):
                                                   self.ab_item.hotspots,
                                                   self.pose.binder_len())
 
+        # These are necessary for compatibility with the parent sample_step function
+        self.mask_seq = torch.clone(~self.ab_item.loop_mask)
+        #self.mask_seq = torch.clone(self.diffusion_mask)
+        self.mask_str = torch.clone(self.diffusion_mask)
+
         # Motif scaffolding: fix motif during diffusion AND apply soft connectivity spring.
         # The motif must be fixed so the model designs around it at the correct
         # target position. The soft spring (log-capped harmonic, weight=0.5) gently
         # biases flanks toward the motif boundaries without gradient explosion.
+        # At the final step, Kabsch alignment corrects any residual drift.
         if self.motif_global_indices is not None:
             motif_idx_t = torch.tensor(self.motif_global_indices)
             # Fix motif in structure and sequence
             self.diffusion_mask[motif_idx_t] = True   # Don't diffuse motif coords
             self.mask_seq[motif_idx_t] = True          # Don't diffuse motif sequence
+            self.mask_str[motif_idx_t] = True          # Don't diffuse motif structure
 
             # Register connectivity potential via PotentialManager
             from rfantibody.rfdiffusion.potentials.potentials import motif_connectivity
@@ -525,17 +532,6 @@ class AbSampler(Sampler):
             )
             self.potential_manager.potentials_to_apply.append(conn_potential)
             print(f"  Added motif_connectivity potential (log-capped, weight=0.5, scale=5.0Å)")
-
-        # These are necessary for compatibility with the parent sample_step function
-        self.mask_seq = torch.clone(~self.ab_item.loop_mask)
-        #self.mask_seq = torch.clone(self.diffusion_mask)
-        self.mask_str = torch.clone(self.diffusion_mask)
-
-        # Motif scaffolding: fix motif coordinates during diffusion.
-        # The motif is held at its true target-relative position so the model
-        # designs the CDR loop around it. A soft log-capped connectivity potential
-        # (registered above) gently biases flanks toward the motif boundaries.
-        # At the final step, Kabsch alignment corrects any residual drift.
 
         # Determine the timesteps to use for diffusion
         if self.diffuser_conf.partial_T:
