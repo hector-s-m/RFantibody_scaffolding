@@ -438,6 +438,7 @@ class AbSampler(Sampler):
             )
             self.motif_data = motif_data
             self.motif_global_indices = motif_result['motif_global_indices']
+            self._motif_diagnostics = []  # Reset per design
         else:
             self.motif_mapper = None
             self.motif_data = None
@@ -668,14 +669,23 @@ class AbSampler(Sampler):
         return self.motif_global_indices is not None
 
     def get_motif_trb_data(self) -> dict | None:
-        """Return motif metadata for TRB output, or None if no motif."""
+        """Return motif metadata + per-timestep diagnostics for TRB output."""
         if not self.has_motif():
             return None
-        return {
+        data = {
             'motif_global_indices': self.motif_global_indices,
             'motif_seq': self.motif_data['motif_seq_str'],
             'motif_cdr_loop': self.ab_conf.motif_cdr_loop,
         }
+        # Include per-timestep drift and boundary distance diagnostics
+        if hasattr(self, '_motif_diagnostics') and self._motif_diagnostics:
+            data['motif_diagnostics'] = self._motif_diagnostics
+            # Summary: final timestep values
+            final = self._motif_diagnostics[-1]
+            data['final_motif_drift'] = final['motif_drift']
+            data['final_n_boundary_dist'] = final['n_boundary_dist']
+            data['final_c_boundary_dist'] = final['c_boundary_dist']
+        return data
 
     def get_motif_fixed_positions_for_mpnn(self) -> dict | None:
         """Return motif fixed positions for ProteinMPNN, or None if no motif."""
@@ -804,13 +814,35 @@ class AbSampler(Sampler):
         # true values carried in x_t (which are never noised/denoised).
         if self.motif_global_indices is not None:
             motif_idx = torch.tensor(self.motif_global_indices, device=x_t.device)
-            # Log how far the model's prediction drifted from true motif coords
-            motif_ca_pred = x_t_1[motif_idx, 1, :]  # CA atoms of model prediction
-            motif_ca_true = x_t[motif_idx, 1, :]     # CA atoms of true (fixed) coords
-            motif_drift = torch.sqrt(((motif_ca_pred - motif_ca_true) ** 2).sum(-1).mean())
-            self._log.info(f'Timestep {t}: motif CA drift = {motif_drift:.3f} Å (corrected)')
+
+            # --- Track motif drift and boundary distances for diagnostics ---
+            motif_ca_pred = x_t_1[motif_idx, 1, :]
+            motif_ca_true = x_t[motif_idx, 1, :]
+            motif_drift = float(torch.sqrt(((motif_ca_pred - motif_ca_true) ** 2).sum(-1).mean()))
+
+            # Flank↔motif boundary CA-CA distances (before snap-back correction)
+            all_ca = x_t_1[:, 1, :]  # [L, 3]
+            first_motif = self.motif_global_indices[0]
+            last_motif = self.motif_global_indices[-1]
+            n_boundary = float(torch.norm(all_ca[first_motif] - all_ca[first_motif - 1])) if first_motif > 0 else 0.0
+            c_boundary = float(torch.norm(all_ca[last_motif + 1] - all_ca[last_motif])) if last_motif < len(all_ca) - 1 else 0.0
+
+            self._log.info(
+                f'Timestep {t}: motif_drift={motif_drift:.2f}Å, '
+                f'N_boundary={n_boundary:.2f}Å, C_boundary={c_boundary:.2f}Å')
+
+            # Store per-timestep diagnostics (saved to .trb later)
+            if not hasattr(self, '_motif_diagnostics'):
+                self._motif_diagnostics = []
+            self._motif_diagnostics.append({
+                't': t,
+                'motif_drift': round(motif_drift, 3),
+                'n_boundary_dist': round(n_boundary, 3),
+                'c_boundary_dist': round(c_boundary, 3),
+            })
+
+            # Snap motif back to true coordinates
             x_t_1[motif_idx] = x_t[motif_idx]
-            # Also fix the motif in px0 so trajectories/visualization are consistent
             px0[motif_idx] = x_t[motif_idx]
 
         return px0, x_t_1, seq_t_1, tors_t_1, plddt
