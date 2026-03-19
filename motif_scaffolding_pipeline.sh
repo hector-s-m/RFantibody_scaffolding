@@ -395,7 +395,7 @@ MPNN_COUNT=$(find "$MPNN_DIR" -name "*.pdb" 2>/dev/null | wc -l)
 echo "[Step 2/3] AntiBMPNN complete. Generated $MPNN_COUNT sequence designs."
 echo "  Output: $MPNN_DIR/${PREFIX}_RF*_mpnn*.pdb"
 
-conda deactivate
+conda deactivate 2>/dev/null || true
 
 # ============================================================================
 # STEP 3: Boltz2 — Structure prediction + scoring (boltz_2.2.1 env)
