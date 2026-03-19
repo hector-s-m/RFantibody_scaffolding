@@ -157,11 +157,6 @@ if [ -z "$TARGET_NAME" ]; then
     exit 1
 fi
 
-if [ -z "$TARGET_NAME" ]; then
-    echo "Error: target_name not set in JSON or via --target-name"
-    exit 1
-fi
-
 if [ -z "$FRAMEWORK_TYPE" ]; then
     echo "Error: framework_type not set in JSON or via --scFv/--Nb"
     exit 1
@@ -335,20 +330,16 @@ echo "  - Generating $NUM_SEQS sequences per backbone"
 echo "  - Motif residues will remain fixed"
 echo "  - Designing loops: $LOOP_STRING"
 
-DESIGN_COUNT=0
-for design_pdb in "$RFDIFF_DIR"/${PREFIX}_RF*.pdb; do
-    DESIGN_COUNT=$((DESIGN_COUNT + 1))
-done
+DESIGN_PDBS=("$RFDIFF_DIR"/${PREFIX}_RF*.pdb)
+DESIGN_COUNT=${#DESIGN_PDBS[@]}
 echo "  - Processing $DESIGN_COUNT backbone designs"
 
-MPNN_IDX=0
-for design_pdb in "$RFDIFF_DIR"/${PREFIX}_RF*.pdb; do
-    MPNN_IDX=$((MPNN_IDX + 1))
+RUNLIST_FILE="$RFDIFF_DIR/_runlist_tmp.txt"
+for ((MPNN_IDX=0; MPNN_IDX<DESIGN_COUNT; MPNN_IDX++)); do
+    design_pdb="${DESIGN_PDBS[$MPNN_IDX]}"
     base=$(basename "$design_pdb" .pdb)
     motif_json="$RFDIFF_DIR/${base}_motif_fixed.json"
 
-    # Create a runlist with just this one design
-    RUNLIST_FILE="$RFDIFF_DIR/_runlist_tmp.txt"
     echo "$base" > "$RUNLIST_FILE"
 
     MPNN_ARGS="-pdbdir $RFDIFF_DIR -outpdbdir $MPNN_RAW_DIR \
@@ -357,14 +348,12 @@ for design_pdb in "$RFDIFF_DIR"/${PREFIX}_RF*.pdb; do
         -seqs_per_struct $NUM_SEQS \
         -temperature $SAMPLING_TEMP"
 
-    if [ -f "$motif_json" ]; then
-        MPNN_ARGS="$MPNN_ARGS -motif_fixed_positions $motif_json"
-    fi
+    [ -f "$motif_json" ] && MPNN_ARGS="$MPNN_ARGS -motif_fixed_positions $motif_json"
 
-    echo "  [$MPNN_IDX/$DESIGN_COUNT] $base"
+    echo "  [$((MPNN_IDX+1))/$DESIGN_COUNT] $base"
     python scripts/proteinmpnn_interface_design.py $MPNN_ARGS
 done
-rm -f "$RFDIFF_DIR/_runlist_tmp.txt"
+rm -f "$RUNLIST_FILE"
 
 # --- Rename MPNN outputs to final naming convention ---
 # MPNN generates: {PREFIX}_RF{N}_dldesign_{M}.pdb
@@ -451,9 +440,9 @@ CURRENT_STEP="Step 3c/3 — Convert CIF to PDB + rename"
 
 echo "  Converting CIF to PDB and organizing outputs..."
 
-# Find all Boltz2 prediction CIF files and convert+rename
-# Boltz2 creates: boltz_results_*/predictions/{stem}/{stem}_model_{S}.cif
-# Rename to: {PREFIX}_{N}_mpnn{M}_{S}.pdb
+# Convert Boltz2 CIF predictions to PDB
+# Input:  boltz_results_{stem}/predictions/{stem}/{stem}_model_{S}.cif
+# Output: {stem}_{S}.pdb  (e.g. PROTEIN_Nb_RF0_mpnn0_0.pdb)
 for cif_file in $(find "$BOLTZ_RAW_DIR" -name "*.cif" -type f | sort); do
     cif_name=$(basename "$cif_file" .cif)
     # Extract model number: {stem}_model_{S} → S

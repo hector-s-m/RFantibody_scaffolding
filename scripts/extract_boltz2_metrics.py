@@ -112,15 +112,29 @@ def find_predicted_structure(pred_dir: Path, stem: str, model_idx: int = 0) -> P
 
 
 # =============================================================================
-# PDB parsing utilities
+# Structure parsing (PDB and mmCIF)
 # =============================================================================
 
-def parse_ca_coords(pdb_path: Path) -> tuple[np.ndarray, list[str], list[int]]:
-    """Extract CA coordinates, chain IDs, and residue numbers from PDB.
+def parse_structure(path: Path, atom_type: str = 'CA') -> tuple[np.ndarray, list[str], list[int]]:
+    """Extract atom coordinates, chain IDs, and residue numbers from PDB or mmCIF.
+
+    Args:
+        path: Path to structure file (.pdb or .cif).
+        atom_type: 'CA' for alpha-carbon, 'CB' for beta-carbon (falls back to CA for GLY).
 
     Returns:
         (coords [N,3], chain_ids [N], resnums [N])
     """
+    if str(path).endswith('.cif'):
+        return _parse_cif(path, atom_type)
+    return _parse_pdb(path, atom_type)
+
+
+def _parse_pdb(pdb_path: Path, atom_type: str = 'CA') -> tuple[np.ndarray, list[str], list[int]]:
+    """Parse PDB file for CA or CB coordinates."""
+    if atom_type == 'CB':
+        return _parse_pdb_cb(pdb_path)
+
     coords, chains, resnums = [], [], []
     seen = set()
     with open(pdb_path) as f:
@@ -135,23 +149,15 @@ def parse_ca_coords(pdb_path: Path) -> tuple[np.ndarray, list[str], list[int]]:
             if key in seen:
                 continue
             seen.add(key)
-            x = float(line[30:38])
-            y = float(line[38:46])
-            z = float(line[46:54])
-            coords.append([x, y, z])
+            coords.append([float(line[30:38]), float(line[38:46]), float(line[46:54])])
             chains.append(chain)
             resnums.append(resnum)
-    return np.array(coords), chains, resnums
+    return np.array(coords) if coords else np.zeros((0, 3)), chains, resnums
 
 
-def parse_cb_coords(pdb_path: Path) -> tuple[np.ndarray, list[str]]:
-    """Extract CB coordinates (CA for GLY) and chain IDs.
-
-    Returns:
-        (coords [N,3], chain_ids [N])
-    """
-    residue_coords = {}
-    residue_chains = {}
+def _parse_pdb_cb(pdb_path: Path) -> tuple[np.ndarray, list[str], list[int]]:
+    """Parse PDB for CB coordinates (CA for GLY)."""
+    residue_data = {}  # key -> (chain, resnum, coord)
     order = []
     with open(pdb_path) as f:
         for line in f:
@@ -161,25 +167,24 @@ def parse_cb_coords(pdb_path: Path) -> tuple[np.ndarray, list[str]]:
             chain = line[21].strip()
             resnum = int(line[22:26].strip())
             key = (chain, resnum)
-            coord = np.array([float(line[30:38]), float(line[38:46]), float(line[46:54])])
-            if key not in residue_coords:
+            coord = [float(line[30:38]), float(line[38:46]), float(line[46:54])]
+            if key not in residue_data:
                 order.append(key)
-                residue_chains[key] = chain
             if atom == 'CB':
-                residue_coords[key] = coord
-            elif atom == 'CA' and key not in residue_coords:
-                residue_coords[key] = coord
-    coords = np.array([residue_coords[k] for k in order])
-    chains = [residue_chains[k] for k in order]
-    return coords, chains
+                residue_data[key] = (chain, resnum, coord)
+            elif atom == 'CA' and key not in residue_data:
+                residue_data[key] = (chain, resnum, coord)
+    if not order:
+        return np.zeros((0, 3)), [], []
+    coords = np.array([residue_data[k][2] for k in order])
+    chains = [residue_data[k][0] for k in order]
+    resnums = [residue_data[k][1] for k in order]
+    return coords, chains, resnums
 
 
-def parse_cif_ca_coords(cif_path: Path) -> tuple[np.ndarray, list[str], list[int]]:
-    """Extract CA coordinates from mmCIF file.
-
-    Returns:
-        (coords [N,3], chain_ids [N], resnums [N])
-    """
+def _parse_cif(cif_path: Path, atom_type: str = 'CA') -> tuple[np.ndarray, list[str], list[int]]:
+    """Parse mmCIF file for CA coordinates."""
+    # CB parsing from CIF not needed (Boltz2 outputs used for CA only)
     coords, chains, resnums = [], [], []
     seen = set()
     with open(cif_path) as f:
@@ -189,10 +194,8 @@ def parse_cif_ca_coords(cif_path: Path) -> tuple[np.ndarray, list[str], list[int
             parts = line.split()
             if len(parts) < 15:
                 continue
-            # _atom_site columns: group_PDB id type_symbol label_atom_id ...
-            # Typical mmCIF: ATOM 1 N N . ALA A 1 1 ? x y z ...
             atom_name = parts[3]
-            if atom_name != 'CA':
+            if atom_name != atom_type:
                 continue
             chain = parts[6]
             resnum = int(parts[8]) if parts[8].isdigit() else int(parts[7])
@@ -200,10 +203,7 @@ def parse_cif_ca_coords(cif_path: Path) -> tuple[np.ndarray, list[str], list[int
             if key in seen:
                 continue
             seen.add(key)
-            x = float(parts[10])
-            y = float(parts[11])
-            z = float(parts[12])
-            coords.append([x, y, z])
+            coords.append([float(parts[10]), float(parts[11]), float(parts[12])])
             chains.append(chain)
             resnums.append(resnum)
     return np.array(coords) if coords else np.zeros((0, 3)), chains, resnums
@@ -229,17 +229,8 @@ def compute_binder_rmsd(
     Returns:
         RMSD in Angstroms, or None if structures can't be aligned.
     """
-    # Parse designed structure
-    if str(designed_pdb).endswith('.cif'):
-        des_coords, des_chains, _ = parse_cif_ca_coords(designed_pdb)
-    else:
-        des_coords, des_chains, _ = parse_ca_coords(designed_pdb)
-
-    # Parse predicted structure
-    if str(predicted_pdb).endswith('.cif'):
-        pred_coords, pred_chains, _ = parse_cif_ca_coords(predicted_pdb)
-    else:
-        pred_coords, pred_chains, _ = parse_ca_coords(predicted_pdb)
+    des_coords, des_chains, _ = parse_structure(designed_pdb)
+    pred_coords, pred_chains, _ = parse_structure(predicted_pdb)
 
     if len(des_coords) == 0 or len(pred_coords) == 0:
         return None
@@ -305,17 +296,8 @@ def compute_motif_rmsd(
     with open(motif_fixed_json) as f:
         motif_positions = json.load(f)
 
-    # Parse designed structure
-    if str(designed_pdb).endswith('.cif'):
-        des_coords, des_chains, des_resnums = parse_cif_ca_coords(designed_pdb)
-    else:
-        des_coords, des_chains, des_resnums = parse_ca_coords(designed_pdb)
-
-    # Parse predicted structure
-    if str(predicted_pdb).endswith('.cif'):
-        pred_coords, pred_chains, pred_resnums = parse_cif_ca_coords(predicted_pdb)
-    else:
-        pred_coords, pred_chains, pred_resnums = parse_ca_coords(predicted_pdb)
+    des_coords, des_chains, des_resnums = parse_structure(designed_pdb)
+    pred_coords, pred_chains, pred_resnums = parse_structure(predicted_pdb)
 
     # Auto-detect chain mapping between designed and predicted structures.
     # Designed PDB: HLT order (binder H,L first, target T last)
@@ -490,7 +472,7 @@ def calculate_contact_scores(
         lis = lis_bt + lis_tb  # one is 0.0
 
     # --- Contact-based scores (need CB coords) ---
-    cb_coords, cb_chains = parse_cb_coords(pdb_path)
+    cb_coords, cb_chains, _ = parse_structure(pdb_path, atom_type='CB')
     cb_chains = np.array(cb_chains)
 
     cb_binder = cb_coords[np.array([c in binder_chains for c in cb_chains])]
@@ -553,17 +535,6 @@ def calculate_contact_scores(
 # =============================================================================
 # Per-prediction metric extraction
 # =============================================================================
-
-def get_chain_ids_from_pae(pae_matrix: np.ndarray, pred_dir: Path, stem: str) -> list[str] | None:
-    """Get chain IDs by parsing the predicted structure."""
-    struct_path = find_predicted_structure(pred_dir, stem)
-    if struct_path is None:
-        return None
-    if str(struct_path).endswith('.cif'):
-        _, chains, _ = parse_cif_ca_coords(struct_path)
-    else:
-        _, chains, _ = parse_ca_coords(struct_path)
-    return chains
 
 
 def _mean_or_none(values: list) -> float | None:
@@ -628,10 +599,7 @@ def _extract_single_model_metrics(
 
     chain_ids = None
     if struct_path is not None:
-        if str(struct_path).endswith('.cif'):
-            _, chain_ids, _ = parse_cif_ca_coords(struct_path)
-        else:
-            _, chain_ids, _ = parse_ca_coords(struct_path)
+        _, chain_ids, _ = parse_structure(struct_path)
 
     # ipSAE
     m['ipSAE'] = None
