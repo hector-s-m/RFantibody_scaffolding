@@ -38,7 +38,6 @@ def spawn_boltz_predict(
         "boltz", "predict", yaml_path,
         "--out_dir", out_dir,
         "--diffusion_samples", str(diffusion_samples),
-        "--output_format", "pdb",
         "--use_msa_server",
         "--msa_server_url", msa_server_url,
         "--use_potentials",

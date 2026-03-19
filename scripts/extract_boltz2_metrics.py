@@ -614,11 +614,30 @@ def extract_metrics_for_prediction(
 
             # --- Motif RMSD ---
             # Look for motif_fixed.json from RFdiffusion output
-            # Naming: ab_des_N_dldesign_M → motif JSON is ab_des_N_motif_fixed.json
-            base_design = stem.split('_dldesign_')[0] if '_dldesign_' in stem else stem
+            # New naming: PREFIX_N_mpnnM → RFdiff file is PREFIX_RFdiff_N
+            # Old naming: ab_des_N_dldesign_M → ab_des_N
+            # Try new naming first, then fall back to old
+            import re
+            motif_json = None
+            rfdiff_dir = designed_pdb_dir.parent / 'RFdiffusion_backbones'
             designs_dir = designed_pdb_dir.parent / 'designs'
-            motif_json = designs_dir / f'{base_design}_motif_fixed.json'
-            if motif_json.exists():
+
+            # New convention: PREFIX_N_mpnnM → PREFIX_RFdiff_N_motif_fixed.json
+            m = re.match(r'^(.+)_(\d+)_mpnn\d+$', stem)
+            if m and rfdiff_dir.exists():
+                prefix, n = m.group(1), m.group(2)
+                candidate = rfdiff_dir / f'{prefix}_RFdiff_{n}_motif_fixed.json'
+                if candidate.exists():
+                    motif_json = candidate
+
+            # Old convention fallback: ab_des_N_dldesign_M → designs/ab_des_N_motif_fixed.json
+            if motif_json is None:
+                base_design = stem.split('_dldesign_')[0] if '_dldesign_' in stem else stem
+                if designs_dir.exists():
+                    candidate = designs_dir / f'{base_design}_motif_fixed.json'
+                    if candidate.exists():
+                        motif_json = candidate
+            if motif_json is not None:
                 try:
                     mrmsd = compute_motif_rmsd(designed_pdb, struct_path, motif_json)
                     if mrmsd is not None:

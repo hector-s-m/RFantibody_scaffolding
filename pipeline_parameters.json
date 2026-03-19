@@ -1,10 +1,10 @@
 {
     "_comment": "Aromatic Motif Scaffolding Pipeline — edit parameters here or override via CLI flags",
 
+    "target_name": "PROTEIN",
     "framework_type": "Nb",
     "framework_pdb": "inputs/Nb.pdb",
     "motif_pdb": "inputs/target+motif.pdb",
-    "output_dir": "output_Nb",
 
     "conda_env_rfantibody": "RFantibody",
     "conda_env_boltz2": "boltz_2.2.1",

@@ -11,6 +11,13 @@
 # Configuration:
 #   Edit pipeline_parameters.json to set all parameters, or override via CLI.
 #
+# Naming convention (example: target_name=PROTEIN, framework_type=Nb):
+#   output/PROTEIN_Nb/
+#     RFdiffusion_backbones/  PROTEIN_Nb_RFdiff_0.pdb
+#     AntiBMPNN_sequences/    PROTEIN_Nb_0_mpnn0.pdb
+#     Boltz-2_predictions/    PROTEIN_Nb_0_mpnn0_0.pdb  (converted from .cif)
+#     designs_registry.csv
+#
 # Usage:
 #   bash motif_scaffolding_pipeline.sh                        # uses pipeline_parameters.json
 #   bash motif_scaffolding_pipeline.sh --config my_run.json   # custom config
@@ -40,10 +47,6 @@ CONFIG_FILE="$PROJECT_ROOT/pipeline_parameters.json"
 # ============================================================================
 
 json_get() {
-    # Usage: json_get KEY [NESTED_KEY]
-    # Examples:
-    #   json_get "framework_type"         -> "Nb"
-    #   json_get "rfdiffusion" "num_designs"  -> 100
     local file="$CONFIG_FILE"
     if [ $# -eq 1 ]; then
         python3 -c "import json; d=json.load(open('$file')); print(d.get('$1', ''))"
@@ -75,10 +78,10 @@ fi
 echo "Loading config from: $CONFIG_FILE"
 
 # Load from JSON
+TARGET_NAME=$(json_get "target_name")
 FRAMEWORK_TYPE=$(json_get "framework_type")
 FRAMEWORK_PDB=$(json_get "framework_pdb")
 MOTIF_COMBINED_PDB=$(json_get "motif_pdb")
-OUTPUT_DIR=$(json_get "output_dir")
 
 RFANTIBODY_ENV=$(json_get "conda_env_rfantibody")
 BOLTZ2_ENV=$(json_get "conda_env_boltz2")
@@ -113,8 +116,8 @@ Framework override (sets framework_type + framework_pdb):
   --Nb                      Use nanobody framework (inputs/Nb.pdb)
 
 Parameter overrides (override JSON values):
+  --target-name NAME        Target protein name (used in output naming)
   -m, --motif PATH          Combined motif+target PDB
-  -o, --output DIR          Output directory
   -n, --num-designs N       Number of backbone designs
   --design-loops STR        Loop lengths, e.g. "H1:,H2:,H3:10-16"
   --motif-cdr CDR           CDR loop for motif
@@ -134,8 +137,8 @@ while [[ $# -gt 0 ]]; do
         --config)            CONFIG_FILE="$2"; shift 2 ;;  # Already handled above, skip
         --scFv)              FRAMEWORK_TYPE="scFv"; FRAMEWORK_PDB="inputs/scFv.pdb"; shift ;;
         --Nb)                FRAMEWORK_TYPE="Nb"; FRAMEWORK_PDB="inputs/Nb.pdb"; shift ;;
+        --target-name)       TARGET_NAME="$2"; shift 2 ;;
         -m|--motif)          MOTIF_COMBINED_PDB="$2"; shift 2 ;;
-        -o|--output)         OUTPUT_DIR="$2"; shift 2 ;;
         -n|--num-designs)    NUM_DESIGNS="$2"; shift 2 ;;
         --design-loops)      DESIGN_LOOPS="$2"; shift 2 ;;
         --motif-cdr)         MOTIF_CDR="$2"; shift 2 ;;
@@ -155,6 +158,11 @@ done
 # VALIDATE & CONFIGURE
 # ============================================================================
 
+if [ -z "$TARGET_NAME" ]; then
+    echo "Error: target_name not set in JSON or via --target-name"
+    exit 1
+fi
+
 if [ -z "$FRAMEWORK_TYPE" ]; then
     echo "Error: framework_type not set in JSON or via --scFv/--Nb"
     exit 1
@@ -170,17 +178,21 @@ if [ ! -f "$MOTIF_COMBINED_PDB" ]; then
     exit 1
 fi
 
+# Naming prefix: TARGET_TYPE (e.g., PROTEIN_Nb)
+PREFIX="${TARGET_NAME}_${FRAMEWORK_TYPE}"
+
+# Output directory: output/PREFIX
+OUTPUT_DIR="output/${PREFIX}"
+
 # Framework-specific LOOP_STRING for MPNN (which loops to redesign)
 case "$FRAMEWORK_TYPE" in
     scFv)
         LOOP_STRING="H1,H2,H3,L1,L2,L3"
         [ -z "$DESIGN_LOOPS" ] && DESIGN_LOOPS="H1:,H2:,H3:10-16,L1:,L2:,L3:"
-        [ -z "$OUTPUT_DIR" ]   && OUTPUT_DIR="output_scFv"
         ;;
     Nb)
         LOOP_STRING="H1,H2,H3"
         [ -z "$DESIGN_LOOPS" ] && DESIGN_LOOPS="H1:,H2:,H3:10-16"
-        [ -z "$OUTPUT_DIR" ]   && OUTPUT_DIR="output_Nb"
         ;;
     *)
         echo "Error: Unknown framework_type '$FRAMEWORK_TYPE'. Use 'scFv' or 'Nb'."
@@ -190,11 +202,22 @@ esac
 
 if [ ! -f "$FRAMEWORK_PDB" ]; then
     echo "Error: Framework PDB not found: $FRAMEWORK_PDB"
-    echo "Set framework_pdb in pipeline_parameters.json or place in inputs/"
     exit 1
 fi
 
-mkdir -p "$OUTPUT_DIR"
+# Create output subdirectories
+RFDIFF_DIR="$OUTPUT_DIR/RFdiffusion_backbones"
+MPNN_DIR="$OUTPUT_DIR/AntiBMPNN_sequences"
+BOLTZ_PRED_DIR="$OUTPUT_DIR/Boltz-2_predictions"
+REGISTRY_CSV="$OUTPUT_DIR/designs_registry.csv"
+
+mkdir -p "$RFDIFF_DIR" "$MPNN_DIR" "$BOLTZ_PRED_DIR"
+
+# Internal working directories (not user-facing)
+MPNN_RAW_DIR="$OUTPUT_DIR/_mpnn_raw"
+BOLTZ_YAML_DIR="$OUTPUT_DIR/_boltz_yaml"
+BOLTZ_RAW_DIR="$OUTPUT_DIR/_boltz_raw"
+mkdir -p "$MPNN_RAW_DIR" "$BOLTZ_YAML_DIR" "$BOLTZ_RAW_DIR"
 
 # Initialize conda
 if command -v conda &>/dev/null; then
@@ -212,7 +235,9 @@ echo "=============================================="
 echo " Aromatic Motif Scaffolding Pipeline"
 echo "=============================================="
 echo "  Config:      $CONFIG_FILE"
+echo "  Target:      $TARGET_NAME"
 echo "  Mode:        $FRAMEWORK_TYPE"
+echo "  Prefix:      $PREFIX"
 echo "  Framework:   $FRAMEWORK_PDB"
 echo "  Motif:       $MOTIF_COMBINED_PDB -> CDR $MOTIF_CDR"
 echo "  Designs:     $NUM_DESIGNS backbones x $NUM_SEQS seqs = $((NUM_DESIGNS * NUM_SEQS)) total"
@@ -240,7 +265,7 @@ conda activate "$RFANTIBODY_ENV"
 
 # Resolve paths to absolute (Hydra changes cwd)
 ABS_FRAMEWORK=$(realpath "$FRAMEWORK_PDB")
-ABS_OUTPUT_PREFIX=$(mkdir -p "$OUTPUT_DIR/designs" && realpath "$OUTPUT_DIR/designs")/ab_des
+ABS_OUTPUT_PREFIX=$(mkdir -p "$RFDIFF_DIR" && realpath "$RFDIFF_DIR")/${PREFIX}_RFdiff
 ABS_MOTIF=$(realpath "$MOTIF_COMBINED_PDB")
 
 # Parse design loops into Hydra format
@@ -274,6 +299,7 @@ fi
 "${RFDIFF_CMD[@]}"
 
 echo "[Step 1/3] RFdiffusion complete."
+echo "  Output: $RFDIFF_DIR/${PREFIX}_RFdiff_*.pdb"
 
 # ============================================================================
 # STEP 2: AntiBMPNN with motif fixed positions (RFantibody env)
@@ -288,22 +314,22 @@ echo "  - Motif residues will remain fixed"
 echo "  - Designing loops: $LOOP_STRING"
 
 DESIGN_COUNT=0
-for design_pdb in "$OUTPUT_DIR"/designs/ab_des_*.pdb; do
+for design_pdb in "$RFDIFF_DIR"/${PREFIX}_RFdiff_*.pdb; do
     DESIGN_COUNT=$((DESIGN_COUNT + 1))
 done
 echo "  - Processing $DESIGN_COUNT backbone designs"
 
 MPNN_IDX=0
-for design_pdb in "$OUTPUT_DIR"/designs/ab_des_*.pdb; do
+for design_pdb in "$RFDIFF_DIR"/${PREFIX}_RFdiff_*.pdb; do
     MPNN_IDX=$((MPNN_IDX + 1))
     base=$(basename "$design_pdb" .pdb)
-    motif_json="$OUTPUT_DIR/designs/${base}_motif_fixed.json"
+    motif_json="$RFDIFF_DIR/${base}_motif_fixed.json"
 
-    # Create a runlist with just this one design (so -pdbdir processes only it)
-    RUNLIST_FILE="$OUTPUT_DIR/designs/_runlist_tmp.txt"
+    # Create a runlist with just this one design
+    RUNLIST_FILE="$RFDIFF_DIR/_runlist_tmp.txt"
     echo "$base" > "$RUNLIST_FILE"
 
-    MPNN_ARGS="-pdbdir $OUTPUT_DIR/designs -outpdbdir $OUTPUT_DIR/mpnn_designs \
+    MPNN_ARGS="-pdbdir $RFDIFF_DIR -outpdbdir $MPNN_RAW_DIR \
         -runlist $RUNLIST_FILE \
         -loop_string $LOOP_STRING \
         -seqs_per_struct $NUM_SEQS \
@@ -316,10 +342,29 @@ for design_pdb in "$OUTPUT_DIR"/designs/ab_des_*.pdb; do
     echo "  [$MPNN_IDX/$DESIGN_COUNT] $base"
     python scripts/proteinmpnn_interface_design.py $MPNN_ARGS
 done
-rm -f "$OUTPUT_DIR/designs/_runlist_tmp.txt"
+rm -f "$RFDIFF_DIR/_runlist_tmp.txt"
 
-MPNN_COUNT=$(find "$OUTPUT_DIR/mpnn_designs" -name "*.pdb" 2>/dev/null | wc -l)
+# --- Rename MPNN outputs to final naming convention ---
+# MPNN generates: {PREFIX}_RFdiff_{N}_dldesign_{M}.pdb
+# Rename to:      {PREFIX}_{N}_mpnn{M}.pdb
+CURRENT_STEP="Step 2/3 — Renaming MPNN outputs"
+echo "  Renaming MPNN outputs..."
+
+for f in "$MPNN_RAW_DIR"/${PREFIX}_RFdiff_*_dldesign_*.pdb; do
+    [ -f "$f" ] || continue
+    fname=$(basename "$f" .pdb)
+    # Extract N and M from {PREFIX}_RFdiff_{N}_dldesign_{M}
+    # Remove the PREFIX_RFdiff_ prefix to get {N}_dldesign_{M}
+    suffix="${fname#${PREFIX}_RFdiff_}"
+    N="${suffix%%_dldesign_*}"
+    M="${suffix##*_dldesign_}"
+    new_name="${PREFIX}_${N}_mpnn${M}.pdb"
+    cp "$f" "$MPNN_DIR/$new_name"
+done
+
+MPNN_COUNT=$(find "$MPNN_DIR" -name "*.pdb" 2>/dev/null | wc -l)
 echo "[Step 2/3] AntiBMPNN complete. Generated $MPNN_COUNT sequence designs."
+echo "  Output: $MPNN_DIR/${PREFIX}_*_mpnn*.pdb"
 
 conda deactivate
 
@@ -334,31 +379,31 @@ echo "[Step 3/3] Running Boltz2 structure prediction + scoring..."
 echo "  - Converting PDBs to Boltz2 YAML format"
 echo "  - Predicting with $DIFFUSION_SAMPLES diffusion sample(s) per design (batch=$BOLTZ_BATCH_SIZE parallel)"
 
-# 3a. Prepare Boltz2 YAML inputs (RFantibody env — only needs pyyaml)
+# 3a. Prepare Boltz2 YAML inputs from the renamed MPNN outputs
 conda deactivate 2>/dev/null || true
 conda activate "$RFANTIBODY_ENV"
 
 python scripts/prepare_boltz2_input.py \
-    -i "$OUTPUT_DIR/mpnn_designs" \
-    -o "$OUTPUT_DIR/boltz2_input" \
+    -i "$MPNN_DIR" \
+    -o "$BOLTZ_YAML_DIR" \
     --remap-chains
 
-YAML_COUNT=$(find "$OUTPUT_DIR/boltz2_input" -name "*.yaml" 2>/dev/null | wc -l)
+YAML_COUNT=$(find "$BOLTZ_YAML_DIR" -name "*.yaml" 2>/dev/null | wc -l)
 echo "  Generated $YAML_COUNT Boltz2 YAML input files"
 
 conda deactivate 2>/dev/null || true
 
-# 3b. Run Boltz2 prediction (boltz_2.2.1 env)
+# 3b. Run Boltz2 prediction (boltz_2.2.1 env) — mmcif output (Boltz2 native)
 CURRENT_STEP="Step 3b/3 — Boltz2 structure prediction"
 
 conda activate "$BOLTZ2_ENV"
 echo "  Activated environment: $BOLTZ2_ENV"
-echo "  boltz location: $(which boltz 2>/dev/null || echo 'NOT FOUND — is boltz installed in $BOLTZ2_ENV?')"
+echo "  boltz location: $(which boltz 2>/dev/null || echo 'NOT FOUND')"
 echo "  Parallel batch size: $BOLTZ_BATCH_SIZE"
 
 BOLTZ_PARALLEL_CMD=(python scripts/run_boltz2_parallel.py
-    -i "$OUTPUT_DIR/boltz2_input"
-    -o "$OUTPUT_DIR/boltz2_output"
+    -i "$BOLTZ_YAML_DIR"
+    -o "$BOLTZ_RAW_DIR"
     --samples "$DIFFUSION_SAMPLES"
     --batch-size "$BOLTZ_BATCH_SIZE"
     --msa-server-url "$MSA_SERVER_URL"
@@ -378,20 +423,59 @@ echo "  Boltz2 prediction complete (${BOLTZ_ELAPSED} min)"
 
 conda deactivate 2>/dev/null || true
 
-# 3c. Extract metrics (RFantibody env — needs numpy + pandas)
-CURRENT_STEP="Step 3c/3 — Extract Boltz2 metrics"
+# 3c. Convert CIF → PDB and rename to final convention
+CURRENT_STEP="Step 3c/3 — Convert CIF to PDB + rename"
 
 conda activate "$RFANTIBODY_ENV"
 
+echo "  Converting CIF to PDB and organizing outputs..."
+
+# Find all Boltz2 prediction CIF files and convert+rename
+# Boltz2 creates: boltz_results_*/predictions/{stem}/{stem}_model_{S}.cif
+# Rename to: {PREFIX}_{N}_mpnn{M}_{S}.pdb
+for cif_file in $(find "$BOLTZ_RAW_DIR" -name "*.cif" -type f | sort); do
+    cif_name=$(basename "$cif_file" .cif)
+    # Extract model number: {stem}_model_{S} → S
+    if [[ "$cif_name" =~ _model_([0-9]+)$ ]]; then
+        model_num="${BASH_REMATCH[1]}"
+        stem="${cif_name%_model_*}"
+        # stem is e.g. PROTEIN_Nb_0_mpnn0 (already the right format from YAML naming)
+        pdb_name="${stem}_${model_num}.pdb"
+        python scripts/convert_cif_to_pdb.py "$cif_file" "$BOLTZ_PRED_DIR/$pdb_name"
+    fi
+done
+
+PRED_COUNT=$(find "$BOLTZ_PRED_DIR" -name "*.pdb" 2>/dev/null | wc -l)
+echo "  Converted $PRED_COUNT structures to PDB format"
+
+# 3d. Copy confidence JSONs and NPZ files alongside PDB predictions
+# (needed for metric extraction)
+for json_file in $(find "$BOLTZ_RAW_DIR" -name "confidence_*.json" -type f | sort); do
+    cp "$json_file" "$BOLTZ_PRED_DIR/"
+done
+for npz_file in $(find "$BOLTZ_RAW_DIR" -name "*.npz" -type f | sort); do
+    cp "$npz_file" "$BOLTZ_PRED_DIR/"
+done
+
+# 3e. Extract metrics
+CURRENT_STEP="Step 3e/3 — Extract Boltz2 metrics"
+
 python scripts/extract_boltz2_metrics.py \
-    -i "$OUTPUT_DIR/boltz2_output" \
-    -d "$OUTPUT_DIR/mpnn_designs" \
-    -o "$OUTPUT_DIR/boltz2_metrics.csv" \
+    -i "$BOLTZ_RAW_DIR" \
+    -d "$MPNN_DIR" \
+    -o "$REGISTRY_CSV" \
     --rank-by ipTM
 
 conda deactivate 2>/dev/null || true
 
 echo "[Step 3/3] Boltz2 complete."
+
+# ============================================================================
+# CLEANUP: Remove internal working directories
+# ============================================================================
+
+rm -rf "$MPNN_RAW_DIR" "$BOLTZ_YAML_DIR"
+# Keep BOLTZ_RAW_DIR for now (contains NPZ/JSON needed for re-analysis)
 
 # ============================================================================
 # SUMMARY
@@ -402,16 +486,17 @@ ELAPSED=$(( (END_PIPELINE - START_PIPELINE) / 60 ))
 
 echo ""
 echo "=============================================="
-echo " Pipeline Complete! ($FRAMEWORK_TYPE, ${ELAPSED} min)"
+echo " Pipeline Complete! ($PREFIX, ${ELAPSED} min)"
 echo "=============================================="
 echo "Outputs:"
-echo "  1. RFdiffusion backbones: $OUTPUT_DIR/designs/"
-echo "  2. AntiBMPNN sequences:   $OUTPUT_DIR/mpnn_designs/"
-echo "  3. Boltz2 structures:     $OUTPUT_DIR/boltz2_output/"
-echo "  4. Ranked metrics CSV:    $OUTPUT_DIR/boltz2_metrics.csv"
-echo "  5. Config snapshot:       $OUTPUT_DIR/pipeline_parameters.json"
+echo "  $OUTPUT_DIR/"
+echo "    RFdiffusion_backbones/  ${PREFIX}_RFdiff_*.pdb"
+echo "    AntiBMPNN_sequences/    ${PREFIX}_*_mpnn*.pdb"
+echo "    Boltz-2_predictions/    ${PREFIX}_*_mpnn*_*.pdb"
+echo "    designs_registry.csv    (ranked by ipTM)"
+echo "    pipeline_parameters.json"
 echo ""
 echo "Metrics: ipTM, ipSAE, pDockQ, pDockQ2, LIS, pLDDT, iPLDDT, iPAE, binder_RMSD, motif_RMSD"
 echo ""
-echo "Review boltz2_metrics.csv to identify top candidates."
+echo "Review designs_registry.csv to identify top candidates."
 echo "=============================================="
