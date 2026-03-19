@@ -522,16 +522,22 @@ class AbSampler(Sampler):
             self.mask_str[motif_idx_t] = True          # Don't diffuse motif structure
 
             # Register connectivity potential via PotentialManager
+            # Uses C-N peptide bond distance (1.33Å) with dynamic weight schedule:
+            # zero for t > T/2, ramps to max_weight=1.0 at t=1
             from rfantibody.rfdiffusion.potentials.potentials import motif_connectivity
+            T = int(self.diffuser_conf.T)
             conn_potential = motif_connectivity(
                 motif_indices=self.motif_global_indices,
-                weight=0.5,       # Gentle — log-capped prevents explosion
-                ideal_dist=3.8,
-                tolerance=0.5,
-                scale=5.0,        # Saturation scale in Angstroms
+                max_weight=1.0,         # Peak weight at final steps
+                ideal_dist=1.33,        # C-N peptide bond length
+                tolerance=0.2,          # ±0.2Å tolerance
+                scale=3.0,              # Log-cap saturation scale
+                T=T,
+                activation_fraction=0.5,  # Active only in second half of schedule
             )
+            self._motif_conn_potential = conn_potential  # Keep reference for set_timestep
             self.potential_manager.potentials_to_apply.append(conn_potential)
-            print(f"  Added motif_connectivity potential (log-capped, weight=0.5, scale=5.0Å)")
+            print(f"  Added motif_connectivity potential (C-N bond, dynamic weight 0→1.0, active t<{T//2})")
 
         # Determine the timesteps to use for diffusion
         if self.diffuser_conf.partial_T:
@@ -698,6 +704,10 @@ class AbSampler(Sampler):
 
     def sample_step(self, *, t, seq_t, x_t, seq_init, final_step):
 
+        # Update dynamic weight for motif connectivity potential
+        if hasattr(self, '_motif_conn_potential'):
+            self._motif_conn_potential.set_timestep(t)
+
         msa_masked, msa_full, seq_in, xt_in, idx_pdb, t1d, t2d, xyz_t, alpha_t = self._preprocess(
             seq_t, x_t, t)
 
@@ -826,23 +836,35 @@ class AbSampler(Sampler):
             px0[motif_idx] = true_motif_coords[:, :n_atoms, :]
 
             # Track boundary distances for diagnostics
-            all_ca = x_t_1[:, 1, :]
+            # C-N peptide bond: C(i) to N(i+1), ideal ~1.33Å
             first_motif = self.motif_global_indices[0]
             last_motif = self.motif_global_indices[-1]
-            n_boundary = float(torch.norm(all_ca[first_motif] - all_ca[first_motif - 1])) if first_motif > 0 else 0.0
-            c_boundary = float(torch.norm(all_ca[last_motif + 1] - all_ca[last_motif])) if last_motif < len(all_ca) - 1 else 0.0
+            all_N = x_t_1[:, 0, :]   # N atoms
+            all_C = x_t_1[:, 2, :]   # C atoms
+            n_bond = float(torch.norm(all_N[first_motif] - all_C[first_motif - 1])) if first_motif > 0 else 0.0
+            c_bond = float(torch.norm(all_N[last_motif + 1] - all_C[last_motif])) if last_motif < all_N.shape[0] - 1 else 0.0
+            # Also report CA-CA for reference
+            all_ca = x_t_1[:, 1, :]
+            n_ca = float(torch.norm(all_ca[first_motif] - all_ca[first_motif - 1])) if first_motif > 0 else 0.0
+            c_ca = float(torch.norm(all_ca[last_motif + 1] - all_ca[last_motif])) if last_motif < all_ca.shape[0] - 1 else 0.0
+            # Dynamic weight for this timestep
+            dyn_w = self._motif_conn_potential._dynamic_weight() if hasattr(self, '_motif_conn_potential') else 0.0
 
             self._log.info(
-                f'Timestep {t}: motif_drift={motif_drift:.2f}Å, '
-                f'N_boundary={n_boundary:.2f}Å, C_boundary={c_boundary:.2f}Å')
+                f'Timestep {t}: drift={motif_drift:.2f}Å, '
+                f'C-N bonds: {n_bond:.2f}/{c_bond:.2f}Å (ideal 1.33), '
+                f'CA-CA: {n_ca:.2f}/{c_ca:.2f}Å, spring_w={dyn_w:.3f}')
 
             if not hasattr(self, '_motif_diagnostics'):
                 self._motif_diagnostics = []
             self._motif_diagnostics.append({
                 't': t,
                 'motif_drift': round(motif_drift, 3),
-                'n_boundary_dist': round(n_boundary, 3),
-                'c_boundary_dist': round(c_boundary, 3),
+                'n_bond_CN': round(n_bond, 3),
+                'c_bond_CN': round(c_bond, 3),
+                'n_dist_CA': round(n_ca, 3),
+                'c_dist_CA': round(c_ca, 3),
+                'spring_weight': round(dyn_w, 4),
             })
 
         return px0, x_t_1, seq_t_1, tors_t_1, plddt

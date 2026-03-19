@@ -866,58 +866,88 @@ class glycan_clash(Potential):
 
 class motif_connectivity(Potential):
     '''
-        Soft guiding potential that gently biases flank residues adjacent to a
-        fixed motif toward the ideal CA-CA bond distance (~3.8Å).
+        Soft guiding potential that biases flank residues adjacent to a fixed
+        motif toward correct peptide bond geometry.
+
+        Measures the actual C(i)-N(i+1) peptide bond distance at both motif
+        boundaries (ideal ~1.33Å), which is far more sensitive to chain breaks
+        than CA-CA distance (~3.8Å).
 
         Uses a log-capped harmonic to prevent gradient explosion:
-          penalty = weight * log(1 + ((d - d0) / scale)^2)
+          penalty = weight(t) * log(1 + ((d - d0) / scale)^2)
 
-        This saturates at large distances instead of growing quadratically,
-        producing bounded gradients regardless of how far the boundary is.
-        At small deviations it behaves like a harmonic spring.
+        Dynamic weight schedule: weight ramps from 0 at t=T to max_weight
+        at t=1. Early steps (high noise) get zero/minimal spring force; late
+        steps (structure resolving) get full force. This prevents fighting
+        the noise at early steps while enforcing connectivity when it matters.
 
-        Applied at two boundaries:
-          - Last N-flank residue ↔ first motif residue
-          - Last motif residue ↔ first C-flank residue
+        Atom indices in the xyz tensor: N=0, CA=1, C=2
 
         Args:
             motif_indices: list of global residue indices of motif residues
-            weight: strength of the guiding potential (default: 0.5)
-            ideal_dist: target CA-CA distance in Angstroms (default: 3.8)
-            tolerance: distances within d0 ± tolerance incur no penalty (default: 0.5)
-            scale: controls how quickly the log saturates (default: 5.0)
+            max_weight: peak strength at t=1 (default: 1.0)
+            ideal_dist: target C-N peptide bond distance in Å (default: 1.33)
+            tolerance: distances within d0 ± tolerance incur no penalty (default: 0.2)
+            scale: controls how quickly the log saturates (default: 3.0)
+            T: total diffusion timesteps, for dynamic weight schedule (default: 200)
+            activation_fraction: fraction of schedule where spring is active (default: 0.5)
+                At activation_fraction=0.5, spring is zero for t > T/2 and ramps
+                linearly from 0 to max_weight for t <= T/2.
     '''
 
-    def __init__(self, motif_indices, weight=0.5, ideal_dist=3.8, tolerance=0.5, scale=5.0):
+    def __init__(self, motif_indices, max_weight=1.0, ideal_dist=1.33, tolerance=0.2,
+                 scale=3.0, T=200, activation_fraction=0.5):
         self.motif_indices = motif_indices
-        self.weight = weight
+        self.max_weight = max_weight
         self.ideal_dist = ideal_dist
         self.tolerance = tolerance
         self.scale = scale
+        self.T = T
+        self.activation_step = int(T * activation_fraction)  # Spring activates below this t
+        self._current_t = T  # Updated externally each step
+
+    def set_timestep(self, t):
+        '''Called by the sampler at each denoising step to update the current timestep.'''
+        self._current_t = t
+
+    def _dynamic_weight(self):
+        '''Linearly ramp weight from 0 at t=activation_step to max_weight at t=1.'''
+        t = self._current_t
+        if t > self.activation_step:
+            return 0.0
+        # Linear ramp: 0 at activation_step, max_weight at t=1
+        return self.max_weight * (1.0 - (t - 1) / max(self.activation_step - 1, 1))
 
     def compute(self, seq, xyz):
-        Ca = xyz[:, 1, :]  # [L, 3]
+        weight = self._dynamic_weight()
+        if weight < 1e-6:
+            return torch.tensor(0.0, device=xyz.device, requires_grad=True)
+
+        # Atom indices: N=0, CA=1, C=2
+        N_atoms = xyz[:, 0, :]   # [L, 3] — nitrogen atoms
+        C_atoms = xyz[:, 2, :]   # [L, 3] — carbonyl carbon atoms
 
         total_penalty = torch.tensor(0.0, device=xyz.device)
 
         first_motif = self.motif_indices[0]
         last_motif = self.motif_indices[-1]
 
-        # N-boundary: residue before first motif → first motif
+        # N-boundary: C of (first_motif - 1) → N of first_motif
+        # This is the peptide bond connecting the last flank residue to the motif
         if first_motif > 0:
-            d = torch.norm(Ca[first_motif] - Ca[first_motif - 1] + 1e-8)
+            d = torch.norm(N_atoms[first_motif] - C_atoms[first_motif - 1] + 1e-8)
             deviation = torch.relu(torch.abs(d - self.ideal_dist) - self.tolerance)
-            # Log-capped: saturates at large deviations, prevents gradient explosion
             total_penalty = total_penalty + torch.log1p((deviation / self.scale) ** 2)
 
-        # C-boundary: last motif → residue after last motif
-        if last_motif < Ca.shape[0] - 1:
-            d = torch.norm(Ca[last_motif + 1] - Ca[last_motif] + 1e-8)
+        # C-boundary: C of last_motif → N of (last_motif + 1)
+        # This is the peptide bond connecting the motif to the first C-flank residue
+        if last_motif < N_atoms.shape[0] - 1:
+            d = torch.norm(N_atoms[last_motif + 1] - C_atoms[last_motif] + 1e-8)
             deviation = torch.relu(torch.abs(d - self.ideal_dist) - self.tolerance)
             total_penalty = total_penalty + torch.log1p((deviation / self.scale) ** 2)
 
         # Return negative penalty (potentials are MAXIMIZED, so negate to minimize distance)
-        return -1 * self.weight * total_penalty
+        return -1 * weight * total_penalty
 
 
 # Dictionary of types of potentials indexed by name of potential. Used by PotentialManager.
