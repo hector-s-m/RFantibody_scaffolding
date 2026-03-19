@@ -25,11 +25,15 @@ References:
 import argparse
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+# Pre-compiled regex for motif JSON lookup
+_MOTIF_STEM_RE = re.compile(r'^(.+_RF\d+)_mpnn\d+$')
 
 
 # =============================================================================
@@ -210,6 +214,33 @@ def _parse_cif(cif_path: Path, atom_type: str = 'CA') -> tuple[np.ndarray, list[
 
 
 # =============================================================================
+# Chain detection (single source of truth)
+# =============================================================================
+
+def detect_binder_target(chain_ids: list[str], is_designed: bool = False) -> tuple[set[str], set[str]]:
+    """Detect binder and target chain sets from chain ID list.
+
+    Convention:
+      - Designed PDB (HLT format): last chain = target, rest = binder
+      - Predicted PDB (remapped):  first chain = target, rest = binder
+
+    Args:
+        chain_ids: List of chain IDs (one per residue).
+        is_designed: True if this is a designed (HLT) structure, False if predicted (ABC).
+
+    Returns:
+        (binder_chains, target_chains) as sets of chain IDs.
+    """
+    unique = list(dict.fromkeys(chain_ids))
+    if len(unique) < 2:
+        return set(), set()
+    if is_designed:
+        return set(unique[:-1]), {unique[-1]}
+    else:
+        return set(unique[1:]), {unique[0]}
+
+
+# =============================================================================
 # Binder RMSD
 # =============================================================================
 
@@ -235,20 +266,11 @@ def compute_binder_rmsd(
     if len(des_coords) == 0 or len(pred_coords) == 0:
         return None
 
-    # Auto-detect binder chains: first chain(s) = target, remaining = binder
-    # Convention: target chains listed first (A,B,...), binder chains after
-    # For designed PDB (HLT): T=target, H/L=binder
-    # For predicted PDB (ABC): A=target, B/C=binder
-    des_unique = list(dict.fromkeys(des_chains))    # preserve order
-    pred_unique = list(dict.fromkeys(pred_chains))
-
-    # Designed PDB: last chain = target (HLT convention), rest = binder
-    des_binder_chains = set(des_unique[:-1]) if len(des_unique) > 1 else set()
-    # Predicted PDB: first chain = target (remapped convention), rest = binder
-    pred_binder_chains = set(pred_unique[1:]) if len(pred_unique) > 1 else set()
+    des_binder_chains, _ = detect_binder_target(des_chains, is_designed=True)
+    pred_binder_chains, _ = detect_binder_target(pred_chains, is_designed=False)
 
     if not des_binder_chains or not pred_binder_chains:
-        return None  # Cannot compute binder RMSD without binder chains
+        return None
 
     des_mask = np.array([c in des_binder_chains for c in des_chains])
     pred_mask = np.array([c in pred_binder_chains for c in pred_chains])
@@ -299,20 +321,16 @@ def compute_motif_rmsd(
     des_coords, des_chains, des_resnums = parse_structure(designed_pdb)
     pred_coords, pred_chains, pred_resnums = parse_structure(predicted_pdb)
 
-    # Auto-detect chain mapping between designed and predicted structures.
-    # Designed PDB: HLT order (binder H,L first, target T last)
-    # Predicted PDB: target first (A), binder after (B,C,...)
-    # Map by role: designed binder chains → predicted binder chains,
-    #              designed target chains → predicted target chains
+    # Map chains by role: designed binder→predicted binder, target→target
+    des_binder_set, des_target_set = detect_binder_target(des_chains, is_designed=True)
+    pred_binder_set, pred_target_set = detect_binder_target(pred_chains, is_designed=False)
+
     des_unique = list(dict.fromkeys(des_chains))
     pred_unique = list(dict.fromkeys(pred_chains))
-
-    # Designed: last chain(s) = target, rest = binder
-    des_binder = des_unique[:-1] if len(des_unique) > 1 else des_unique
-    des_target = des_unique[-1:] if len(des_unique) > 1 else []
-    # Predicted: first chain(s) = target, rest = binder
-    pred_target = pred_unique[:len(des_target)]
-    pred_binder = pred_unique[len(des_target):]
+    des_binder = [c for c in des_unique if c in des_binder_set]
+    des_target = [c for c in des_unique if c in des_target_set]
+    pred_binder = [c for c in pred_unique if c in pred_binder_set]
+    pred_target = [c for c in pred_unique if c in pred_target_set]
 
     chain_remap = {}
     for old, new in zip(des_target, pred_target):
@@ -441,13 +459,12 @@ def calculate_contact_scores(
         Dict with 'pDockQ', 'pDockQ2', 'LIS'.
     """
     chain_ids = np.array(chain_ids)
-    # Auto-detect binder/target from predicted structure chain order:
-    # Convention: first chain(s) = target, remaining = binder
-    unique_chains = list(dict.fromkeys(chain_ids))
-    if binder_chains is None:
-        binder_chains = set(unique_chains[1:]) if len(unique_chains) > 1 else set()
-    if target_chains is None:
-        target_chains = {unique_chains[0]} if unique_chains else set()
+    if binder_chains is None or target_chains is None:
+        auto_binder, auto_target = detect_binder_target(list(chain_ids), is_designed=False)
+        if binder_chains is None:
+            binder_chains = auto_binder
+        if target_chains is None:
+            target_chains = auto_target
 
     binder_mask = np.array([c in binder_chains for c in chain_ids])
     target_mask = np.array([c in target_chains for c in chain_ids])
@@ -558,10 +575,9 @@ def _find_motif_json(stem: str, designed_pdb_dir: Path) -> Path | None:
 
     Naming convention: PREFIX_RFN_mpnnM → RFdiffusion_backbones/PREFIX_RFN_motif_fixed.json
     """
-    import re
     rfdiff_dir = designed_pdb_dir.parent / 'RFdiffusion_backbones'
 
-    m = re.match(r'^(.+_RF\d+)_mpnn\d+$', stem)
+    m = _MOTIF_STEM_RE.match(stem)
     if m and rfdiff_dir.exists():
         candidate = rfdiff_dir / f'{m.group(1)}_motif_fixed.json'
         if candidate.exists():
@@ -607,8 +623,8 @@ def _extract_single_model_metrics(
         try:
             ipsae_results = calculate_ipsae(pae, chain_ids)
             m['ipSAE'] = round(ipsae_results.get('ipSAE', 0.0), 4)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f'    Warning: ipSAE failed for model_{model_idx}: {e}')
 
     # pDockQ, pDockQ2, LIS
     m['pDockQ'] = None
@@ -625,8 +641,8 @@ def _extract_single_model_metrics(
             m['pDockQ'] = contact_scores['pDockQ']
             m['pDockQ2'] = contact_scores['pDockQ2']
             m['LIS'] = contact_scores['LIS']
-        except Exception:
-            pass
+        except Exception as e:
+            print(f'    Warning: contact scores failed for model_{model_idx}: {e}')
 
     # Binder RMSD
     m['binder_RMSD'] = None
@@ -635,8 +651,8 @@ def _extract_single_model_metrics(
             rmsd = compute_binder_rmsd(designed_pdb, struct_path)
             if rmsd is not None:
                 m['binder_RMSD'] = round(rmsd, 3)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f'    Warning: binder RMSD failed for model_{model_idx}: {e}')
 
     # Motif RMSD
     m['motif_RMSD'] = None
@@ -645,8 +661,8 @@ def _extract_single_model_metrics(
             mrmsd = compute_motif_rmsd(designed_pdb, struct_path, motif_json)
             if mrmsd is not None:
                 m['motif_RMSD'] = round(mrmsd, 3)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f'    Warning: motif RMSD failed for model_{model_idx}: {e}')
 
     return m
 

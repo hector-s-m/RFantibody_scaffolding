@@ -273,11 +273,6 @@ ABS_FRAMEWORK=$(realpath "$FRAMEWORK_PDB")
 ABS_OUTPUT_PREFIX=$(mkdir -p "$RFDIFF_DIR" && realpath "$RFDIFF_DIR")/${PREFIX}_RF
 ABS_MOTIF=$(realpath "$MOTIF_COMBINED_PDB")
 
-# Parse design loops into Hydra format
-IFS=',' read -ra LOOP_ITEMS <<< "$DESIGN_LOOPS"
-LOOP_STR=$(printf ",%s" "${LOOP_ITEMS[@]}")
-LOOP_STR="${LOOP_STR:1}"  # Remove leading comma
-
 # Build RFdiffusion command (calling script directly — no entry point dependency)
 RFDIFF_CMD=(python scripts/rfdiffusion_inference.py --config-name antibody
     "antibody.framework_pdb=$ABS_FRAMEWORK"
@@ -286,14 +281,11 @@ RFDIFF_CMD=(python scripts/rfdiffusion_inference.py --config-name antibody
     "diffuser.T=$DIFFUSER_T"
     "antibody.motif_pdb=$ABS_MOTIF"
     "antibody.motif_cdr_loop=$MOTIF_CDR"
-    "antibody.design_loops=[$LOOP_STR]"
+    "antibody.design_loops=[$DESIGN_LOOPS]"
 )
 
 if [ -n "$HOTSPOTS" ]; then
-    IFS=',' read -ra HS_ITEMS <<< "$HOTSPOTS"
-    HS_STR=$(printf ",%s" "${HS_ITEMS[@]}")
-    HS_STR="${HS_STR:1}"
-    RFDIFF_CMD+=("ppi.hotspot_res=[$HS_STR]")
+    RFDIFF_CMD+=("ppi.hotspot_res=[$HOTSPOTS]")
 fi
 
 # Auto-detect weights
@@ -440,23 +432,22 @@ CURRENT_STEP="Step 3c/3 — Convert CIF to PDB + rename"
 
 echo "  Converting CIF to PDB and organizing outputs..."
 
-# Convert Boltz2 CIF predictions to PDB
-# Input:  boltz_results_{stem}/predictions/{stem}/{stem}_model_{S}.cif
-# Output: {stem}_{S}.pdb  (e.g. PROTEIN_Nb_RF0_mpnn0_0.pdb)
-for cif_file in $(find "$BOLTZ_RAW_DIR" -name "*.cif" -type f | sort); do
-    cif_name=$(basename "$cif_file" .cif)
-    # Extract model number: {stem}_model_{S} → S
-    if [[ "$cif_name" =~ _model_([0-9]+)$ ]]; then
+# Batch convert all CIF files to PDB (single Python invocation)
+python scripts/convert_cif_to_pdb.py --dir "$BOLTZ_RAW_DIR"
+
+# Rename converted PDBs: {stem}_model_{S}.pdb → {stem}_{S}.pdb
+# and move to final predictions directory
+for pdb_file in $(find "$BOLTZ_RAW_DIR" -name "*_model_*.pdb" -type f | sort); do
+    pdb_name=$(basename "$pdb_file" .pdb)
+    if [[ "$pdb_name" =~ _model_([0-9]+)$ ]]; then
         model_num="${BASH_REMATCH[1]}"
-        stem="${cif_name%_model_*}"
-        # stem is e.g. PROTEIN_Nb_0_mpnn0 (already the right format from YAML naming)
-        pdb_name="${stem}_${model_num}.pdb"
-        python scripts/convert_cif_to_pdb.py "$cif_file" "$BOLTZ_PRED_DIR/$pdb_name"
+        stem="${pdb_name%_model_*}"
+        mv "$pdb_file" "$BOLTZ_PRED_DIR/${stem}_${model_num}.pdb"
     fi
 done
 
 PRED_COUNT=$(find "$BOLTZ_PRED_DIR" -name "*.pdb" 2>/dev/null | wc -l)
-echo "  Converted $PRED_COUNT structures to PDB format"
+echo "  Converted and organized $PRED_COUNT structures"
 
 # 3d. Extract metrics (reads from _boltz_raw for JSON/NPZ, MPNN_DIR for designed PDBs)
 CURRENT_STEP="Step 3d/3 — Extract Boltz2 metrics"
