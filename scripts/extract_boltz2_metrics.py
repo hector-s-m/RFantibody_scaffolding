@@ -614,7 +614,7 @@ def extract_metrics_for_prediction(
 
             # --- Motif RMSD ---
             # Look for motif_fixed.json from RFdiffusion output
-            # New naming: PREFIX_N_mpnnM → RFdiff file is PREFIX_RFdiff_N
+            # New naming: PREFIX_N_mpnnM → RF file is PREFIX_RF_N
             # Old naming: ab_des_N_dldesign_M → ab_des_N
             # Try new naming first, then fall back to old
             import re
@@ -622,11 +622,11 @@ def extract_metrics_for_prediction(
             rfdiff_dir = designed_pdb_dir.parent / 'RFdiffusion_backbones'
             designs_dir = designed_pdb_dir.parent / 'designs'
 
-            # New convention: PREFIX_N_mpnnM → PREFIX_RFdiff_N_motif_fixed.json
+            # New convention: PREFIX_N_mpnnM → PREFIX_RF_N_motif_fixed.json
             m = re.match(r'^(.+)_(\d+)_mpnn\d+$', stem)
             if m and rfdiff_dir.exists():
                 prefix, n = m.group(1), m.group(2)
-                candidate = rfdiff_dir / f'{prefix}_RFdiff_{n}_motif_fixed.json'
+                candidate = rfdiff_dir / f'{prefix}_RF_{n}_motif_fixed.json'
                 if candidate.exists():
                     motif_json = candidate
 
