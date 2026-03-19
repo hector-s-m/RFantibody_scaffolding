@@ -504,19 +504,12 @@ class AbSampler(Sampler):
                                                   self.ab_item.hotspots,
                                                   self.pose.binder_len())
 
-        # Add motif connectivity potential to steer flanks toward proper bond
-        # distance from the fixed motif (harmonic spring at flank↔motif boundaries)
-        if self.motif_global_indices is not None:
-            from rfantibody.rfdiffusion.potentials.potentials import motif_connectivity
-            conn_potential = motif_connectivity(
-                motif_indices=self.motif_global_indices,
-                weight=1.0,       # guide_scale (10) amplifies this further
-                ideal_dist=3.8,
-                tolerance=0.5,
-            )
-            self.potential_manager.potentials_to_apply.append(conn_potential)
-            print(f"  Added motif_connectivity potential (weight=1, target=3.8±0.5Å) "
-                  f"at boundaries of motif indices {self.motif_global_indices[0]}-{self.motif_global_indices[-1]}")
+        # NOTE: A motif_connectivity guiding potential was tested here but caused
+        # gradient explosion at early timesteps (flank coords are fully noised,
+        # creating 100+Å boundary distances whose quadratic penalty gradient
+        # drives coordinates to infinity → NaN → crash). The diffusion model
+        # handles connectivity via the denoising process itself. The tetrahedral
+        # flank initialization + post-diffusion validation is sufficient.
 
         # These are necessary for compatibility with the parent sample_step function
         self.mask_seq = torch.clone(~self.ab_item.loop_mask)
