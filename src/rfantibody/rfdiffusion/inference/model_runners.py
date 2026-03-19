@@ -516,12 +516,15 @@ class AbSampler(Sampler):
         #self.mask_seq = torch.clone(self.diffusion_mask)
         self.mask_str = torch.clone(self.diffusion_mask)
 
-        # If motif scaffolding is active, fix motif residues (True = not diffused)
-        if self.motif_global_indices is not None:
-            motif_idx = torch.tensor(self.motif_global_indices)
-            self.mask_seq[motif_idx] = True
-            self.mask_str[motif_idx] = True
-            self.diffusion_mask[motif_idx] = True
+        # Motif scaffolding: do NOT fix motif during diffusion.
+        # The model designs the full CDR loop freely (motif positions diffuse
+        # with the rest of the binder). At the final step, Kabsch alignment
+        # rigidly transforms the binder to place the motif at its true coords,
+        # preserving internal connectivity.
+        #
+        # Previous approach (fixing motif via diffusion_mask) prevented the
+        # model from building a connected loop through the motif — the flanks
+        # couldn't bridge to fixed residues inside the CDR.
 
         # Determine the timesteps to use for diffusion
         if self.diffuser_conf.partial_T:
@@ -800,31 +803,26 @@ class AbSampler(Sampler):
             tors_t_1 = torch.ones((self.mask_str.shape[-1], 10, 2))
             px0 = px0.to(x_t.device)
 
-        # Fix motif coordinates at EVERY step including the final one.
-        # At intermediate steps, get_next_pose() handles this via diffusion_mask,
-        # but the final step (t == final_step) uses raw px0 prediction which can
-        # drift the motif away from the target. Force motif coords back to the
-        # true values carried in x_t (which are never noised/denoised).
+        # --- Motif scaffolding: diagnostics + final-step Kabsch alignment ---
         if self.motif_global_indices is not None:
             motif_idx = torch.tensor(self.motif_global_indices, device=x_t.device)
 
-            # --- Track motif drift and boundary distances for diagnostics ---
-            motif_ca_pred = x_t_1[motif_idx, 1, :]
-            motif_ca_true = x_t[motif_idx, 1, :]
-            motif_drift = float(torch.sqrt(((motif_ca_pred - motif_ca_true) ** 2).sum(-1).mean()))
-
-            # Flank↔motif boundary CA-CA distances (before snap-back correction)
-            all_ca = x_t_1[:, 1, :]  # [L, 3]
+            # Track boundary distances for diagnostics
+            all_ca = x_t_1[:, 1, :]
             first_motif = self.motif_global_indices[0]
             last_motif = self.motif_global_indices[-1]
             n_boundary = float(torch.norm(all_ca[first_motif] - all_ca[first_motif - 1])) if first_motif > 0 else 0.0
             c_boundary = float(torch.norm(all_ca[last_motif + 1] - all_ca[last_motif])) if last_motif < len(all_ca) - 1 else 0.0
 
+            # Motif drift (how far model prediction is from true motif coords)
+            motif_ca_pred = x_t_1[motif_idx, 1, :]
+            true_motif_ca = self.ab_item.inputs.xyz_true[motif_idx, 1, :].to(x_t.device)
+            motif_drift = float(torch.sqrt(((motif_ca_pred - true_motif_ca) ** 2).sum(-1).mean()))
+
             self._log.info(
                 f'Timestep {t}: motif_drift={motif_drift:.2f}Å, '
                 f'N_boundary={n_boundary:.2f}Å, C_boundary={c_boundary:.2f}Å')
 
-            # Store per-timestep diagnostics (saved to .trb later)
             if not hasattr(self, '_motif_diagnostics'):
                 self._motif_diagnostics = []
             self._motif_diagnostics.append({
@@ -834,46 +832,39 @@ class AbSampler(Sampler):
                 'c_boundary_dist': round(c_boundary, 3),
             })
 
-            # Align binder onto true motif position (preserves internal connectivity).
-            # The model predicts a connected loop with the motif at a drifted position.
-            # Instead of just snapping motif coords back (which breaks flanks), we
-            # rigidly transform the entire binder so the motif lands on its true coords.
-            binder_len = self.pose.binder_len()
-            pred_motif_ca = x_t_1[motif_idx, 1, :].detach()  # [M, 3]
-            true_motif_ca = x_t[motif_idx, 1, :].detach()     # [M, 3]
+            # ONLY at the final step: Kabsch-align the binder onto the true motif.
+            # During intermediate steps, the model diffuses everything freely
+            # (including motif positions) so it can build a connected loop.
+            # At the final step, we rigidly transform the binder to place the
+            # motif at its exact target coordinates, preserving connectivity.
+            if t == final_step:
+                binder_len = self.pose.binder_len()
+                pred_motif_ca = x_t_1[motif_idx, 1, :].detach()
 
-            # Kabsch alignment: find rotation R and translation t such that
-            # R @ pred_motif + t ≈ true_motif
-            pred_center = pred_motif_ca.mean(dim=0)
-            true_center = true_motif_ca.mean(dim=0)
-            pred_centered = pred_motif_ca - pred_center
-            true_centered = true_motif_ca - true_center
+                pred_center = pred_motif_ca.mean(dim=0)
+                true_center = true_motif_ca.mean(dim=0)
+                pred_centered = pred_motif_ca - pred_center
+                true_centered = true_motif_ca - true_center
 
-            # Covariance matrix
-            H = pred_centered.T @ true_centered  # [3, 3]
-            U, S, Vt = torch.linalg.svd(H)
-            # Handle reflection
-            d = torch.det(Vt.T @ U.T)
-            sign_matrix = torch.diag(torch.tensor([1.0, 1.0, d.sign()], device=H.device))
-            R = Vt.T @ sign_matrix @ U.T  # [3, 3] rotation
+                H = pred_centered.T @ true_centered
+                U, S, Vt = torch.linalg.svd(H)
+                det = torch.det(Vt.T @ U.T)
+                sign_matrix = torch.diag(torch.tensor([1.0, 1.0, det.sign()], device=H.device))
+                R = Vt.T @ sign_matrix @ U.T
 
-            # Apply rigid transform to entire binder (residues 0:binder_len)
-            # This preserves all bond distances within the binder while moving
-            # the motif to its true position
-            binder_coords = x_t_1[:binder_len].clone()  # [binder_len, 14, 3]
-            for atom_dim in range(binder_coords.shape[1]):
-                binder_coords[:, atom_dim, :] = (
-                    (binder_coords[:, atom_dim, :] - pred_center) @ R.T + true_center
-                )
-            x_t_1[:binder_len] = binder_coords
+                # Rigid transform entire binder
+                for target_tensor in [x_t_1, px0]:
+                    binder = target_tensor[:binder_len].clone()
+                    for atom_dim in range(binder.shape[1]):
+                        binder[:, atom_dim, :] = (
+                            (binder[:, atom_dim, :] - pred_center) @ R.T + true_center
+                        )
+                    target_tensor[:binder_len] = binder
 
-            # Same transform for px0 (trajectory consistency)
-            px0_binder = px0[:binder_len].clone()
-            for atom_dim in range(px0_binder.shape[1]):
-                px0_binder[:, atom_dim, :] = (
-                    (px0_binder[:, atom_dim, :] - pred_center) @ R.T + true_center
-                )
-            px0[:binder_len] = px0_binder
+                # Log post-alignment motif RMSD
+                aligned_motif_ca = x_t_1[motif_idx, 1, :]
+                post_rmsd = float(torch.sqrt(((aligned_motif_ca - true_motif_ca) ** 2).sum(-1).mean()))
+                self._log.info(f'  Final Kabsch alignment: motif RMSD {motif_drift:.2f}Å → {post_rmsd:.2f}Å')
 
         return px0, x_t_1, seq_t_1, tors_t_1, plddt
 
