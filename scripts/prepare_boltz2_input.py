@@ -74,31 +74,61 @@ def generate_boltz_yaml(
     complex_name: str,
     chain_sequences: dict[str, str],
     output_dir: Path,
-    chain_mapping: dict[str, str] | None = None,
+    remap_chains: bool = False,
+    target_chains: set[str] | None = None,
 ) -> Path:
     """Generate a Boltz2-compatible YAML file for a protein complex.
+
+    When remap_chains is True, chains are reordered and renamed:
+      - Target chains come first (A, B, C, ...)
+      - Binder chains follow (next letters)
+    Target chains are identified by target_chains set (default: {'T'}).
 
     Args:
         complex_name: Name for the output file (without extension).
         chain_sequences: Dict of {chain_id: sequence}.
         output_dir: Directory to write the YAML file.
-        chain_mapping: Optional remapping of chain IDs for Boltz2
-            (e.g., {'H': 'A', 'L': 'B', 'T': 'C'}).
+        remap_chains: If True, reorder target-first and rename to A/B/C/...
+        target_chains: Set of chain IDs that are target (default: {'T'}).
 
     Returns:
         Path to the generated YAML file.
     """
-    sequences = []
-    for chain_id, seq in chain_sequences.items():
-        boltz_id = chain_mapping.get(chain_id, chain_id) if chain_mapping else chain_id
-        # Clean non-standard residues
-        cleaned = ''.join(c if c in 'ACDEFGHIKLMNPQRSTVWY' else 'X' for c in seq)
-        sequences.append({
-            'protein': {
-                'id': boltz_id,
-                'sequence': cleaned,
-            }
-        })
+    if target_chains is None:
+        target_chains = {'T'}
+
+    if remap_chains:
+        # Reorder: target chains first, then binder chains
+        target_seqs = [(ch, seq) for ch, seq in chain_sequences.items() if ch in target_chains]
+        binder_seqs = [(ch, seq) for ch, seq in chain_sequences.items() if ch not in target_chains]
+        ordered = target_seqs + binder_seqs
+
+        # Assign new chain IDs: A, B, C, D, ...
+        new_ids = [chr(ord('A') + i) for i in range(len(ordered))]
+        sequences = []
+        for (old_ch, seq), new_id in zip(ordered, new_ids):
+            cleaned = ''.join(c if c in 'ACDEFGHIKLMNPQRSTVWY' else 'X' for c in seq)
+            sequences.append({
+                'protein': {
+                    'id': new_id,
+                    'sequence': cleaned,
+                }
+            })
+
+        n_target = len(target_seqs)
+        n_binder = len(binder_seqs)
+        target_ids = new_ids[:n_target]
+        binder_ids = new_ids[n_target:]
+    else:
+        sequences = []
+        for chain_id, seq in chain_sequences.items():
+            cleaned = ''.join(c if c in 'ACDEFGHIKLMNPQRSTVWY' else 'X' for c in seq)
+            sequences.append({
+                'protein': {
+                    'id': chain_id,
+                    'sequence': cleaned,
+                }
+            })
 
     yaml_data = {
         'version': 1,
@@ -131,7 +161,11 @@ def main():
     )
     parser.add_argument(
         '--remap-chains', action='store_true', default=False,
-        help='Remap HLT chain IDs to A/B/C for Boltz2 compatibility'
+        help='Reorder and rename chains: target first (A,B,...), then binder'
+    )
+    parser.add_argument(
+        '--target-chains', type=str, default='T',
+        help='Comma-separated chain IDs that are target (default: T)'
     )
     parser.add_argument(
         '--min-chain-length', type=int, default=5,
@@ -147,9 +181,11 @@ def main():
         print(f'Error: No PDB files found in {input_dir}')
         sys.exit(1)
 
-    chain_map = {'H': 'A', 'L': 'B', 'T': 'C'} if args.remap_chains else None
+    target_chain_set = set(args.target_chains.split(','))
 
     print(f'Preparing Boltz2 inputs for {len(pdb_files)} PDB files...')
+    if args.remap_chains:
+        print(f'  Chain ordering: target ({",".join(target_chain_set)}) → A,B,... then binder → next letters')
     generated = 0
     skipped = 0
 
@@ -169,7 +205,11 @@ def main():
                 continue
 
             name = pdb_path.stem
-            yaml_path = generate_boltz_yaml(name, chains, output_dir, chain_map)
+            yaml_path = generate_boltz_yaml(
+                name, chains, output_dir,
+                remap_chains=args.remap_chains,
+                target_chains=target_chain_set,
+            )
             generated += 1
 
         except Exception as e:

@@ -236,13 +236,17 @@ def compute_binder_rmsd(
     if len(des_coords) == 0 or len(pred_coords) == 0:
         return None
 
-    # Auto-detect binder chains: all chains except the last one (target)
-    # Works for both HLT (binder=H,L target=T) and ABC (binder=A,B target=C)
+    # Auto-detect binder chains: first chain(s) = target, remaining = binder
+    # Convention: target chains listed first (A,B,...), binder chains after
+    # For designed PDB (HLT): T=target, H/L=binder
+    # For predicted PDB (ABC): A=target, B/C=binder
     des_unique = list(dict.fromkeys(des_chains))    # preserve order
     pred_unique = list(dict.fromkeys(pred_chains))
 
+    # Designed PDB: last chain = target (HLT convention), rest = binder
     des_binder_chains = set(des_unique[:-1]) if len(des_unique) > 1 else set(des_unique)
-    pred_binder_chains = set(pred_unique[:-1]) if len(pred_unique) > 1 else set(pred_unique)
+    # Predicted PDB: first chain = target (remapped convention), rest = binder
+    pred_binder_chains = set(pred_unique[1:]) if len(pred_unique) > 1 else set(pred_unique)
 
     des_mask = np.array([c in des_binder_chains for c in des_chains])
     pred_mask = np.array([c in pred_binder_chains for c in pred_chains])
@@ -303,14 +307,25 @@ def compute_motif_rmsd(
         pred_coords, pred_chains, pred_resnums = parse_ca_coords(predicted_pdb)
 
     # Auto-detect chain mapping between designed and predicted structures.
-    # Designed PDB may have H/L/T; predicted may have A/B/C (or same).
-    # Build mapping by chain order (1st→1st, 2nd→2nd, etc.)
+    # Designed PDB: HLT order (binder H,L first, target T last)
+    # Predicted PDB: target first (A), binder after (B,C,...)
+    # Map by role: designed binder chains → predicted binder chains,
+    #              designed target chains → predicted target chains
     des_unique = list(dict.fromkeys(des_chains))
     pred_unique = list(dict.fromkeys(pred_chains))
+
+    # Designed: last chain(s) = target, rest = binder
+    des_binder = des_unique[:-1] if len(des_unique) > 1 else des_unique
+    des_target = des_unique[-1:] if len(des_unique) > 1 else []
+    # Predicted: first chain(s) = target, rest = binder
+    pred_target = pred_unique[:len(des_target)]
+    pred_binder = pred_unique[len(des_target):]
+
     chain_remap = {}
-    for i, ch in enumerate(des_unique):
-        if i < len(pred_unique):
-            chain_remap[ch] = pred_unique[i]
+    for old, new in zip(des_target, pred_target):
+        chain_remap[old] = new
+    for old, new in zip(des_binder, pred_binder):
+        chain_remap[old] = new
 
     des_motif_coords = []
     pred_motif_coords = []
@@ -433,12 +448,13 @@ def calculate_contact_scores(
         Dict with 'pDockQ', 'pDockQ2', 'LIS'.
     """
     chain_ids = np.array(chain_ids)
-    # Auto-detect binder/target: all chains except last = binder, last = target
+    # Auto-detect binder/target from predicted structure chain order:
+    # Convention: first chain(s) = target, remaining = binder
     unique_chains = list(dict.fromkeys(chain_ids))
     if binder_chains is None:
-        binder_chains = set(unique_chains[:-1]) if len(unique_chains) > 1 else set()
+        binder_chains = set(unique_chains[1:]) if len(unique_chains) > 1 else set()
     if target_chains is None:
-        target_chains = {unique_chains[-1]} if unique_chains else set()
+        target_chains = {unique_chains[0]} if unique_chains else set()
 
     binder_mask = np.array([c in binder_chains for c in chain_ids])
     target_mask = np.array([c in target_chains for c in chain_ids])
