@@ -449,12 +449,11 @@ BOLTZ_END=$(date +%s)
 BOLTZ_ELAPSED=$(( (BOLTZ_END - BOLTZ_START) / 60 ))
 echo "  Boltz2 prediction complete (${BOLTZ_ELAPSED} min)"
 
-conda deactivate 2>/dev/null || true
+# Stay in boltz_2.2.1 env — CIF conversion (stdlib only) and metric extraction
+# (numpy + pandas) both work here. Avoids unnecessary env switch.
 
 # 3c. Convert CIF → PDB and rename to final convention
 CURRENT_STEP="Step 3c/3 — Convert CIF to PDB + rename"
-
-conda activate "$RFANTIBODY_ENV"
 
 echo "  Converting CIF to PDB and organizing outputs..."
 
