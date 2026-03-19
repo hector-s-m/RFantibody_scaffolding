@@ -19,6 +19,7 @@ Requires the boltz conda environment to already be active.
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -30,12 +31,13 @@ def spawn_boltz_predict(
     out_dir: str,
     diffusion_samples: int,
     msa_server_url: str,
+    boltz_bin: str = "boltz",
     cache: str = "",
     extra_args: list = None,
 ) -> subprocess.Popen:
     """Spawn a non-blocking `boltz predict` process for a single YAML file."""
     cmd = [
-        "boltz", "predict", yaml_path,
+        boltz_bin, "predict", yaml_path,
         "--out_dir", out_dir,
         "--diffusion_samples", str(diffusion_samples),
         "--use_msa_server",
@@ -90,6 +92,15 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Verify boltz is available in PATH (critical for subprocess.Popen)
+    boltz_bin = shutil.which("boltz")
+    if boltz_bin is None:
+        print("Error: 'boltz' not found in PATH.")
+        print("  Ensure the boltz conda environment is activated before running this script.")
+        print(f"  PATH: {os.environ.get('PATH', 'NOT SET')}")
+        sys.exit(1)
+    print(f"Using boltz binary: {boltz_bin}")
+
     yaml_files = sorted(input_dir.glob("*.yaml"))
     if not yaml_files:
         print(f"Error: No YAML files found in {input_dir}")
@@ -123,6 +134,7 @@ def main():
                 out_dir=str(output_dir),
                 diffusion_samples=args.samples,
                 msa_server_url=args.msa_server_url,
+                boltz_bin=boltz_bin,
                 cache=args.cache,
             )
             procs[stem] = proc

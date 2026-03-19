@@ -244,9 +244,12 @@ def compute_binder_rmsd(
     pred_unique = list(dict.fromkeys(pred_chains))
 
     # Designed PDB: last chain = target (HLT convention), rest = binder
-    des_binder_chains = set(des_unique[:-1]) if len(des_unique) > 1 else set(des_unique)
+    des_binder_chains = set(des_unique[:-1]) if len(des_unique) > 1 else set()
     # Predicted PDB: first chain = target (remapped convention), rest = binder
-    pred_binder_chains = set(pred_unique[1:]) if len(pred_unique) > 1 else set(pred_unique)
+    pred_binder_chains = set(pred_unique[1:]) if len(pred_unique) > 1 else set()
+
+    if not des_binder_chains or not pred_binder_chains:
+        return None  # Cannot compute binder RMSD without binder chains
 
     des_mask = np.array([c in des_binder_chains for c in des_chains])
     pred_mask = np.array([c in pred_binder_chains for c in pred_chains])

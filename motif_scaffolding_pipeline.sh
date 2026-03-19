@@ -163,6 +163,11 @@ if [ -z "$TARGET_NAME" ]; then
     exit 1
 fi
 
+if [ -z "$TARGET_NAME" ]; then
+    echo "Error: target_name not set in JSON or via --target-name"
+    exit 1
+fi
+
 if [ -z "$FRAMEWORK_TYPE" ]; then
     echo "Error: framework_type not set in JSON or via --scFv/--Nb"
     exit 1
@@ -175,6 +180,16 @@ fi
 
 if [ ! -f "$MOTIF_COMBINED_PDB" ]; then
     echo "Error: Motif PDB not found: $MOTIF_COMBINED_PDB"
+    exit 1
+fi
+
+# Validate numeric parameters early (before expensive steps)
+if [ "$NUM_DESIGNS" -lt 1 ] 2>/dev/null; then
+    echo "Error: num_designs must be >= 1 (got: $NUM_DESIGNS)"
+    exit 1
+fi
+if [ "$NUM_SEQS" -lt 1 ] 2>/dev/null; then
+    echo "Error: num_seqs must be >= 1 (got: $NUM_SEQS)"
     exit 1
 fi
 
@@ -300,10 +315,15 @@ fi
 "${RFDIFF_CMD[@]}"
 
 # Rename RFdiffusion outputs: PREFIX_RF_N → PREFIX_RFN (no underscore before number)
+# Uses bash parameter expansion (not sed) to avoid regex metacharacter issues in PREFIX
+OLD_PATTERN="${PREFIX}_RF_"
+NEW_PATTERN="${PREFIX}_RF"
 for f in "$RFDIFF_DIR"/${PREFIX}_RF_*.pdb "$RFDIFF_DIR"/${PREFIX}_RF_*.trb "$RFDIFF_DIR"/${PREFIX}_RF_*_motif_fixed.json; do
     [ -f "$f" ] || continue
-    new_f=$(echo "$f" | sed "s/${PREFIX}_RF_/${PREFIX}_RF/")
-    [ "$f" != "$new_f" ] && mv "$f" "$new_f"
+    dir=$(dirname "$f")
+    base=$(basename "$f")
+    new_base="${NEW_PATTERN}${base#${OLD_PATTERN}}"
+    [ "$base" != "$new_base" ] && mv "$f" "$dir/$new_base"
 done
 
 echo "[Step 1/3] RFdiffusion complete."
@@ -395,7 +415,8 @@ conda activate "$RFANTIBODY_ENV"
 python scripts/prepare_boltz2_input.py \
     -i "$MPNN_DIR" \
     -o "$BOLTZ_YAML_DIR" \
-    --remap-chains
+    --remap-chains \
+    --target-chains T
 
 YAML_COUNT=$(find "$BOLTZ_YAML_DIR" -name "*.yaml" 2>/dev/null | wc -l)
 echo "  Generated $YAML_COUNT Boltz2 YAML input files"
