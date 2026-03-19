@@ -43,20 +43,7 @@ cd "$PROJECT_ROOT"
 CONFIG_FILE="$PROJECT_ROOT/pipeline_parameters.json"
 
 # ============================================================================
-# HELPER: Read a value from JSON config using python (no jq dependency)
-# ============================================================================
-
-json_get() {
-    local file="$CONFIG_FILE"
-    if [ $# -eq 1 ]; then
-        python3 -c "import json; d=json.load(open('$file')); print(d.get('$1', ''))"
-    elif [ $# -eq 2 ]; then
-        python3 -c "import json; d=json.load(open('$file')); print(d.get('$1', {}).get('$2', ''))"
-    fi
-}
-
-# ============================================================================
-# DEFAULTS (from JSON config, then CLI overrides)
+# LOAD JSON CONFIG (single Python call instead of 18 subprocess spawns)
 # ============================================================================
 
 # Parse --config first if provided (before loading defaults)
@@ -77,28 +64,35 @@ fi
 
 echo "Loading config from: $CONFIG_FILE"
 
-# Load from JSON
-TARGET_NAME=$(json_get "target_name")
-FRAMEWORK_TYPE=$(json_get "framework_type")
-FRAMEWORK_PDB=$(json_get "framework_pdb")
-MOTIF_COMBINED_PDB=$(json_get "motif_pdb")
-
-RFANTIBODY_ENV=$(json_get "conda_env_rfantibody")
-BOLTZ2_ENV=$(json_get "conda_env_boltz2")
-
-NUM_DESIGNS=$(json_get "rfdiffusion" "num_designs")
-MOTIF_CDR=$(json_get "rfdiffusion" "motif_cdr")
-DESIGN_LOOPS=$(json_get "rfdiffusion" "design_loops")
-HOTSPOTS=$(json_get "rfdiffusion" "hotspots")
-DIFFUSER_T=$(json_get "rfdiffusion" "diffuser_T")
-
-NUM_SEQS=$(json_get "antibmpnn" "num_seqs")
-SAMPLING_TEMP=$(json_get "antibmpnn" "sampling_temp")
-
-DIFFUSION_SAMPLES=$(json_get "boltz2" "diffusion_samples")
-BOLTZ_BATCH_SIZE=$(json_get "boltz2" "batch_size")
-MSA_SERVER_URL=$(json_get "boltz2" "msa_server_url")
-BOLTZ_CACHE=$(json_get "boltz2" "cache")
+# Load ALL config values in one Python call (writes shell assignments to eval)
+eval "$(python3 -c "
+import json, sys
+d = json.load(open('$CONFIG_FILE'))
+def p(var, val):
+    # Escape single quotes for safe shell eval
+    val = str(val).replace(\"'\", \"'\\\\''\")
+    print(f\"{var}='{val}'\")
+p('TARGET_NAME',       d.get('target_name', ''))
+p('FRAMEWORK_TYPE',    d.get('framework_type', ''))
+p('FRAMEWORK_PDB',     d.get('framework_pdb', ''))
+p('MOTIF_COMBINED_PDB',d.get('motif_pdb', ''))
+p('RFANTIBODY_ENV',    d.get('conda_env_rfantibody', 'RFantibody'))
+p('BOLTZ2_ENV',        d.get('conda_env_boltz2', 'boltz_2.2.1'))
+rf = d.get('rfdiffusion', {})
+p('NUM_DESIGNS',  rf.get('num_designs', 100))
+p('MOTIF_CDR',    rf.get('motif_cdr', 'H3'))
+p('DESIGN_LOOPS', rf.get('design_loops', ''))
+p('HOTSPOTS',     rf.get('hotspots', ''))
+p('DIFFUSER_T',   rf.get('diffuser_T', 200))
+ab = d.get('antibmpnn', {})
+p('NUM_SEQS',      ab.get('num_seqs', 4))
+p('SAMPLING_TEMP', ab.get('sampling_temp', 0.2))
+b2 = d.get('boltz2', {})
+p('DIFFUSION_SAMPLES', b2.get('diffusion_samples', 3))
+p('BOLTZ_BATCH_SIZE',  b2.get('batch_size', 6))
+p('MSA_SERVER_URL',    b2.get('msa_server_url', 'http://a3m-2023.mmseqs.com'))
+p('BOLTZ_CACHE',       b2.get('cache', ''))
+")"
 
 # ============================================================================
 # CLI OVERRIDES (take precedence over JSON)
@@ -388,7 +382,7 @@ for f in "$MPNN_RAW_DIR"/${PREFIX}_RF*_dldesign_*.pdb; do
     RF_PART="${suffix%%_dldesign_*}"    # RF0
     M="${suffix##*_dldesign_}"          # 2
     new_name="${PREFIX}_${RF_PART}_mpnn${M}.pdb"
-    cp "$f" "$MPNN_DIR/$new_name"
+    mv "$f" "$MPNN_DIR/$new_name"
 done
 
 MPNN_COUNT=$(find "$MPNN_DIR" -name "*.pdb" 2>/dev/null | wc -l)

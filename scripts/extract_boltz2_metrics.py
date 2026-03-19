@@ -39,26 +39,16 @@ import pandas as pd
 def find_predictions(output_dir: Path) -> list[tuple[str, Path]]:
     """Find Boltz2 prediction directories.
 
+    Boltz2 output structure:
+      {output_dir}/boltz_results_{stem}/predictions/{stem}/
+        {stem}_model_0.cif, confidence_{stem}_model_0.json, ...
+
     Returns list of (stem_name, prediction_directory).
     """
     predictions = []
-
-    for pattern in [
-        'boltz_results_*/predictions/*',
-        'predictions/*',
-    ]:
-        for pred_dir in sorted(output_dir.glob(pattern)):
-            if pred_dir.is_dir():
-                predictions.append((pred_dir.name, pred_dir))
-        if predictions:
-            break
-
-    # Fallback: directories containing confidence JSON
-    if not predictions:
-        for json_file in sorted(output_dir.glob('*/confidence_*.json')):
-            pred_dir = json_file.parent
+    for pred_dir in sorted(output_dir.glob('boltz_results_*/predictions/*')):
+        if pred_dir.is_dir():
             predictions.append((pred_dir.name, pred_dir))
-
     return predictions
 
 
@@ -97,42 +87,27 @@ def pick_best_model(pred_dir: Path, stem: str) -> int:
 def load_confidence_json(pred_dir: Path, stem: str, model_idx: int = 0) -> dict | None:
     """Load Boltz2 confidence JSON for a specific model."""
     path = pred_dir / f'confidence_{stem}_model_{model_idx}.json'
-    if path.exists():
-        with open(path) as f:
-            return json.load(f)
-    # Fallback: try any model
-    for candidate in sorted(pred_dir.glob(f'confidence_{stem}_model_*.json')):
-        with open(candidate) as f:
-            return json.load(f)
-    return None
+    if not path.exists():
+        return None
+    with open(path) as f:
+        return json.load(f)
 
 
 def load_npz(pred_dir: Path, prefix: str, stem: str, key: str, model_idx: int = 0) -> np.ndarray | None:
     """Load a Boltz2 NPZ file for a specific model."""
     path = pred_dir / f'{prefix}_{stem}_model_{model_idx}.npz'
-    if path.exists():
-        data = np.load(str(path))
-        if key in data:
-            return data[key]
-    # Fallback: try any model
-    for candidate in sorted(pred_dir.glob(f'{prefix}_{stem}_model_*.npz')):
-        data = np.load(str(candidate))
-        if key in data:
-            return data[key]
-    return None
+    if not path.exists():
+        return None
+    data = np.load(str(path))
+    return data[key] if key in data else None
 
 
 def find_predicted_structure(pred_dir: Path, stem: str, model_idx: int = 0) -> Path | None:
-    """Find the Boltz2 predicted structure (PDB or mmCIF) for a specific model."""
+    """Find the Boltz2 predicted structure (CIF or PDB) for a specific model."""
     for ext in ['.cif', '.pdb']:
         path = pred_dir / f'{stem}_model_{model_idx}{ext}'
         if path.exists():
             return path
-    # Fallback: try any model
-    for ext in ['.cif', '.pdb']:
-        matches = sorted(pred_dir.glob(f'{stem}_model_*{ext}'))
-        if matches:
-            return matches[0]
     return None
 
 
@@ -608,22 +583,16 @@ def _find_designed_pdb(stem: str, designed_pdb_dir: Path) -> Path | None:
 
 
 def _find_motif_json(stem: str, designed_pdb_dir: Path) -> Path | None:
-    """Find motif_fixed.json for this design stem."""
+    """Find motif_fixed.json for this design stem.
+
+    Naming convention: PREFIX_RFN_mpnnM → RFdiffusion_backbones/PREFIX_RFN_motif_fixed.json
+    """
     import re
     rfdiff_dir = designed_pdb_dir.parent / 'RFdiffusion_backbones'
-    designs_dir = designed_pdb_dir.parent / 'designs'
 
-    # New convention: PREFIX_RFN_mpnnM → PREFIX_RFN_motif_fixed.json
     m = re.match(r'^(.+_RF\d+)_mpnn\d+$', stem)
     if m and rfdiff_dir.exists():
         candidate = rfdiff_dir / f'{m.group(1)}_motif_fixed.json'
-        if candidate.exists():
-            return candidate
-
-    # Old convention: ab_des_N_dldesign_M → designs/ab_des_N_motif_fixed.json
-    base_design = stem.split('_dldesign_')[0] if '_dldesign_' in stem else stem
-    if designs_dir.exists():
-        candidate = designs_dir / f'{base_design}_motif_fixed.json'
         if candidate.exists():
             return candidate
 
