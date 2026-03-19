@@ -13,9 +13,9 @@
 #
 # Naming convention (example: target_name=PROTEIN, framework_type=Nb):
 #   output/PROTEIN_Nb/
-#     RFdiffusion_backbones/  PROTEIN_Nb_RF_0.pdb
-#     AntiBMPNN_sequences/    PROTEIN_Nb_0_mpnn0.pdb
-#     Boltz-2_predictions/    PROTEIN_Nb_0_mpnn0_0.pdb  (converted from .cif)
+#     RFdiffusion_backbones/  PROTEIN_Nb_RF0.pdb
+#     AntiBMPNN_sequences/    PROTEIN_Nb_RF0_mpnn0.pdb
+#     Boltz-2_predictions/    PROTEIN_Nb_RF0_mpnn0_0.pdb  (converted from .cif)
 #     designs_registry.csv
 #
 # Usage:
@@ -298,8 +298,15 @@ fi
 
 "${RFDIFF_CMD[@]}"
 
+# Rename RFdiffusion outputs: PREFIX_RF_N → PREFIX_RFN (no underscore before number)
+for f in "$RFDIFF_DIR"/${PREFIX}_RF_*.pdb "$RFDIFF_DIR"/${PREFIX}_RF_*.trb "$RFDIFF_DIR"/${PREFIX}_RF_*_motif_fixed.json; do
+    [ -f "$f" ] || continue
+    new_f=$(echo "$f" | sed "s/${PREFIX}_RF_/${PREFIX}_RF/")
+    [ "$f" != "$new_f" ] && mv "$f" "$new_f"
+done
+
 echo "[Step 1/3] RFdiffusion complete."
-echo "  Output: $RFDIFF_DIR/${PREFIX}_RF_*.pdb"
+echo "  Output: $RFDIFF_DIR/${PREFIX}_RF*.pdb"
 
 # ============================================================================
 # STEP 2: AntiBMPNN with motif fixed positions (RFantibody env)
@@ -314,13 +321,13 @@ echo "  - Motif residues will remain fixed"
 echo "  - Designing loops: $LOOP_STRING"
 
 DESIGN_COUNT=0
-for design_pdb in "$RFDIFF_DIR"/${PREFIX}_RF_*.pdb; do
+for design_pdb in "$RFDIFF_DIR"/${PREFIX}_RF*.pdb; do
     DESIGN_COUNT=$((DESIGN_COUNT + 1))
 done
 echo "  - Processing $DESIGN_COUNT backbone designs"
 
 MPNN_IDX=0
-for design_pdb in "$RFDIFF_DIR"/${PREFIX}_RF_*.pdb; do
+for design_pdb in "$RFDIFF_DIR"/${PREFIX}_RF*.pdb; do
     MPNN_IDX=$((MPNN_IDX + 1))
     base=$(basename "$design_pdb" .pdb)
     motif_json="$RFDIFF_DIR/${base}_motif_fixed.json"
@@ -345,26 +352,27 @@ done
 rm -f "$RFDIFF_DIR/_runlist_tmp.txt"
 
 # --- Rename MPNN outputs to final naming convention ---
-# MPNN generates: {PREFIX}_RF_{N}_dldesign_{M}.pdb
-# Rename to:      {PREFIX}_{N}_mpnn{M}.pdb
+# MPNN generates: {PREFIX}_RF{N}_dldesign_{M}.pdb
+# Rename to:      {PREFIX}_RF{N}_mpnn{M}.pdb
 CURRENT_STEP="Step 2/3 — Renaming MPNN outputs"
 echo "  Renaming MPNN outputs..."
 
-for f in "$MPNN_RAW_DIR"/${PREFIX}_RF_*_dldesign_*.pdb; do
+for f in "$MPNN_RAW_DIR"/${PREFIX}_RF*_dldesign_*.pdb; do
     [ -f "$f" ] || continue
     fname=$(basename "$f" .pdb)
-    # Extract N and M from {PREFIX}_RF_{N}_dldesign_{M}
-    # Remove the PREFIX_RF_ prefix to get {N}_dldesign_{M}
-    suffix="${fname#${PREFIX}_RF_}"
-    N="${suffix%%_dldesign_*}"
-    M="${suffix##*_dldesign_}"
-    new_name="${PREFIX}_${N}_mpnn${M}.pdb"
+    # Extract RFN and M from {PREFIX}_RF{N}_dldesign_{M}
+    # Remove PREFIX_ prefix to get RF{N}_dldesign_{M}
+    suffix="${fname#${PREFIX}_}"
+    # suffix is now e.g. RF0_dldesign_2
+    RF_PART="${suffix%%_dldesign_*}"    # RF0
+    M="${suffix##*_dldesign_}"          # 2
+    new_name="${PREFIX}_${RF_PART}_mpnn${M}.pdb"
     cp "$f" "$MPNN_DIR/$new_name"
 done
 
 MPNN_COUNT=$(find "$MPNN_DIR" -name "*.pdb" 2>/dev/null | wc -l)
 echo "[Step 2/3] AntiBMPNN complete. Generated $MPNN_COUNT sequence designs."
-echo "  Output: $MPNN_DIR/${PREFIX}_*_mpnn*.pdb"
+echo "  Output: $MPNN_DIR/${PREFIX}_RF*_mpnn*.pdb"
 
 conda deactivate
 
@@ -490,9 +498,9 @@ echo " Pipeline Complete! ($PREFIX, ${ELAPSED} min)"
 echo "=============================================="
 echo "Outputs:"
 echo "  $OUTPUT_DIR/"
-echo "    RFdiffusion_backbones/  ${PREFIX}_RF_*.pdb"
-echo "    AntiBMPNN_sequences/    ${PREFIX}_*_mpnn*.pdb"
-echo "    Boltz-2_predictions/    ${PREFIX}_*_mpnn*_*.pdb"
+echo "    RFdiffusion_backbones/  ${PREFIX}_RF*.pdb"
+echo "    AntiBMPNN_sequences/    ${PREFIX}_RF*_mpnn*.pdb"
+echo "    Boltz-2_predictions/    ${PREFIX}_RF*_mpnn*_*.pdb"
 echo "    designs_registry.csv    (ranked by ipTM)"
 echo "    pipeline_parameters.json"
 echo ""
