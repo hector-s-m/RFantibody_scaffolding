@@ -866,29 +866,34 @@ class glycan_clash(Potential):
 
 class motif_connectivity(Potential):
     '''
-        Guiding potential that pulls flank residues adjacent to a fixed motif
-        toward the ideal CA-CA bond distance (~3.8Å). This ensures the designed
-        CDR loop connects physically to the grafted motif.
+        Soft guiding potential that gently biases flank residues adjacent to a
+        fixed motif toward the ideal CA-CA bond distance (~3.8Å).
+
+        Uses a log-capped harmonic to prevent gradient explosion:
+          penalty = weight * log(1 + ((d - d0) / scale)^2)
+
+        This saturates at large distances instead of growing quadratically,
+        producing bounded gradients regardless of how far the boundary is.
+        At small deviations it behaves like a harmonic spring.
 
         Applied at two boundaries:
           - Last N-flank residue ↔ first motif residue
           - Last motif residue ↔ first C-flank residue
 
-        The potential is a harmonic spring: penalty = weight * (d - d0)^2
-        for d > d0, where d0 is the ideal CA-CA distance.
-
         Args:
             motif_indices: list of global residue indices of motif residues
-            weight: strength of the guiding potential (default: 10)
+            weight: strength of the guiding potential (default: 0.5)
             ideal_dist: target CA-CA distance in Angstroms (default: 3.8)
             tolerance: distances within d0 ± tolerance incur no penalty (default: 0.5)
+            scale: controls how quickly the log saturates (default: 5.0)
     '''
 
-    def __init__(self, motif_indices, weight=10, ideal_dist=3.8, tolerance=0.5):
+    def __init__(self, motif_indices, weight=0.5, ideal_dist=3.8, tolerance=0.5, scale=5.0):
         self.motif_indices = motif_indices
         self.weight = weight
         self.ideal_dist = ideal_dist
         self.tolerance = tolerance
+        self.scale = scale
 
     def compute(self, seq, xyz):
         Ca = xyz[:, 1, :]  # [L, 3]
@@ -900,15 +905,16 @@ class motif_connectivity(Potential):
 
         # N-boundary: residue before first motif → first motif
         if first_motif > 0:
-            d = torch.norm(Ca[first_motif] - Ca[first_motif - 1])
+            d = torch.norm(Ca[first_motif] - Ca[first_motif - 1] + 1e-8)
             deviation = torch.relu(torch.abs(d - self.ideal_dist) - self.tolerance)
-            total_penalty = total_penalty + deviation ** 2
+            # Log-capped: saturates at large deviations, prevents gradient explosion
+            total_penalty = total_penalty + torch.log1p((deviation / self.scale) ** 2)
 
         # C-boundary: last motif → residue after last motif
         if last_motif < Ca.shape[0] - 1:
-            d = torch.norm(Ca[last_motif + 1] - Ca[last_motif])
+            d = torch.norm(Ca[last_motif + 1] - Ca[last_motif] + 1e-8)
             deviation = torch.relu(torch.abs(d - self.ideal_dist) - self.tolerance)
-            total_penalty = total_penalty + deviation ** 2
+            total_penalty = total_penalty + torch.log1p((deviation / self.scale) ** 2)
 
         # Return negative penalty (potentials are MAXIMIZED, so negate to minimize distance)
         return -1 * self.weight * total_penalty

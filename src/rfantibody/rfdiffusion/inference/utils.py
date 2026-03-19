@@ -794,10 +794,17 @@ class Denoise():
         if not diffusion_mask == None:
             Ca_grads[diffusion_mask,:] = 0
 
-        # check for NaN's 
+        # check for NaN's
         if torch.isnan(Ca_grads).any():
             print('WARNING: NaN in potential gradients, replacing with zero grad.')
             Ca_grads[:] = 0
+
+        # Clip gradient magnitude per residue to prevent coordinate explosion
+        # Max 1.0Å displacement per step from any potential
+        max_grad_norm = 1.0
+        grad_norms = torch.norm(Ca_grads, dim=-1, keepdim=True)  # [L, 1]
+        scale = torch.clamp(max_grad_norm / (grad_norms + 1e-8), max=1.0)
+        Ca_grads = Ca_grads * scale
 
         return Ca_grads
 
