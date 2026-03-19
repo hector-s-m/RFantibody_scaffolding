@@ -1,7 +1,7 @@
 {
     "_comment": "Aromatic Motif Scaffolding Pipeline — edit parameters here or override via CLI flags",
 
-    "target_name": "PROTEIN",
+    "target_name": "6JB8",
     "framework_type": "Nb",
     "framework_pdb": "inputs/Nb.pdb",
     "motif_pdb": "inputs/target+motif.pdb",
@@ -10,22 +10,22 @@
     "conda_env_boltz2": "boltz_2.2.1",
 
     "rfdiffusion": {
-        "num_designs": 100,
+        "num_designs": 5,
         "motif_cdr": "H3",
-        "design_loops": "H1:,H2:,H3:10-16",
-        "hotspots": "",
+        "design_loops": "H1:,H2:,H3:12-18",
+        "hotspots": "A80,A83",
         "diffuser_T": 200
     },
 
     "antibmpnn": {
-        "num_seqs": 4,
+        "num_seqs": 2,
         "sampling_temp": 0.2
     },
 
     "boltz2": {
-        "diffusion_samples": 3,
+        "diffusion_samples": 2,
         "batch_size": 6,
         "msa_server_url": "http://a3m-2023.mmseqs.com",
-        "cache": ""
+        "cache": "/opt/py/conda/PyLib_Common/envs/boltz_2.2.1/.boltz"
     }
 }
