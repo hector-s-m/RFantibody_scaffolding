@@ -258,68 +258,96 @@ START_PIPELINE=$(date +%s)
 # STEP 1: RFdiffusion with motif scaffolding (RFantibody env)
 # ============================================================================
 
-CURRENT_STEP="Step 1/3 — RFdiffusion backbone design"
+CURRENT_STEP="Step 1/3 — RFdiffusion backbone design + validation"
 
 echo ""
 echo "[Step 1/3] Running RFdiffusion with motif scaffolding..."
-echo "  - Designing $NUM_DESIGNS backbones"
+echo "  - Target: $NUM_DESIGNS valid backbones"
 echo "  - Motif scaffolded into $MOTIF_CDR"
 echo "  - Loop lengths: $DESIGN_LOOPS"
+echo "  - Will regenerate until $NUM_DESIGNS valid designs are obtained"
 
 conda activate "$RFANTIBODY_ENV"
 
 # Resolve paths to absolute (Hydra changes cwd)
 ABS_FRAMEWORK=$(realpath "$FRAMEWORK_PDB")
-ABS_OUTPUT_PREFIX=$(mkdir -p "$RFDIFF_DIR" && realpath "$RFDIFF_DIR")/${PREFIX}_RF
+ABS_RFDIFF_DIR=$(mkdir -p "$RFDIFF_DIR" && realpath "$RFDIFF_DIR")
 ABS_MOTIF=$(realpath "$MOTIF_COMBINED_PDB")
 
-# Build RFdiffusion command (calling script directly — no entry point dependency)
-RFDIFF_CMD=(python scripts/rfdiffusion_inference.py --config-name antibody
-    "antibody.framework_pdb=$ABS_FRAMEWORK"
-    "inference.output_prefix=$ABS_OUTPUT_PREFIX"
-    "inference.num_designs=$NUM_DESIGNS"
-    "diffuser.T=$DIFFUSER_T"
-    "antibody.motif_pdb=$ABS_MOTIF"
-    "antibody.motif_cdr_loop=$MOTIF_CDR"
-    "antibody.design_loops=[$DESIGN_LOOPS]"
-)
+# Rename helper: PREFIX_RF_N → PREFIX_RFN (bash parameter expansion, regex-safe)
+rename_rfdiff_outputs() {
+    local old_pat="${PREFIX}_RF_"
+    local new_pat="${PREFIX}_RF"
+    for f in "$RFDIFF_DIR"/${PREFIX}_RF_*.pdb "$RFDIFF_DIR"/${PREFIX}_RF_*.trb "$RFDIFF_DIR"/${PREFIX}_RF_*_motif_fixed.json; do
+        [ -f "$f" ] || continue
+        local dir=$(dirname "$f")
+        local base=$(basename "$f")
+        local new_base="${new_pat}${base#${old_pat}}"
+        [ "$base" != "$new_base" ] && mv "$f" "$dir/$new_base"
+    done
+}
 
-if [ -n "$HOTSPOTS" ]; then
-    RFDIFF_CMD+=("ppi.hotspot_res=[$HOTSPOTS]")
-fi
+# Generate-validate loop: keep generating until we have NUM_DESIGNS valid backbones
+MAX_ROUNDS=5           # Safety limit to prevent infinite loops
+BATCH_PER_ROUND=$NUM_DESIGNS  # Generate this many per round
+VALID_COUNT=0
+TOTAL_GENERATED=0
+ROUND=0
 
-# Auto-detect weights
-if [ -f "weights/RFdiffusion_Ab.pt" ]; then
-    RFDIFF_CMD+=("inference.ckpt_override_path=$(realpath weights/RFdiffusion_Ab.pt)")
-fi
+while [ "$VALID_COUNT" -lt "$NUM_DESIGNS" ] && [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
+    ROUND=$((ROUND + 1))
+    REMAINING=$((NUM_DESIGNS - VALID_COUNT))
 
-"${RFDIFF_CMD[@]}"
+    # On first round, generate full batch. On retries, generate only what's missing.
+    if [ "$ROUND" -eq 1 ]; then
+        BATCH_SIZE=$NUM_DESIGNS
+    else
+        BATCH_SIZE=$REMAINING
+        echo ""
+        echo "  [Round $ROUND] Need $REMAINING more valid backbones, generating $BATCH_SIZE..."
+    fi
 
-# Rename RFdiffusion outputs: PREFIX_RF_N → PREFIX_RFN (no underscore before number)
-# Uses bash parameter expansion (not sed) to avoid regex metacharacter issues in PREFIX
-OLD_PATTERN="${PREFIX}_RF_"
-NEW_PATTERN="${PREFIX}_RF"
-for f in "$RFDIFF_DIR"/${PREFIX}_RF_*.pdb "$RFDIFF_DIR"/${PREFIX}_RF_*.trb "$RFDIFF_DIR"/${PREFIX}_RF_*_motif_fixed.json; do
-    [ -f "$f" ] || continue
-    dir=$(dirname "$f")
-    base=$(basename "$f")
-    new_base="${NEW_PATTERN}${base#${OLD_PATTERN}}"
-    [ "$base" != "$new_base" ] && mv "$f" "$dir/$new_base"
+    # RFdiffusion uses design_startnum to continue numbering from where we left off
+    RFDIFF_CMD=(python scripts/rfdiffusion_inference.py --config-name antibody
+        "antibody.framework_pdb=$ABS_FRAMEWORK"
+        "inference.output_prefix=$ABS_RFDIFF_DIR/${PREFIX}_RF"
+        "inference.num_designs=$BATCH_SIZE"
+        "inference.design_startnum=$TOTAL_GENERATED"
+        "diffuser.T=$DIFFUSER_T"
+        "antibody.motif_pdb=$ABS_MOTIF"
+        "antibody.motif_cdr_loop=$MOTIF_CDR"
+        "antibody.design_loops=[$DESIGN_LOOPS]"
+    )
+
+    if [ -n "$HOTSPOTS" ]; then
+        RFDIFF_CMD+=("ppi.hotspot_res=[$HOTSPOTS]")
+    fi
+
+    if [ -f "weights/RFdiffusion_Ab.pt" ]; then
+        RFDIFF_CMD+=("inference.ckpt_override_path=$(realpath weights/RFdiffusion_Ab.pt)")
+    fi
+
+    "${RFDIFF_CMD[@]}"
+    TOTAL_GENERATED=$((TOTAL_GENERATED + BATCH_SIZE))
+
+    # Rename outputs
+    rename_rfdiff_outputs
+
+    # Validate — moves invalid designs to rejected/
+    echo "  Validating backbone physical validity..."
+    python scripts/validate_backbones.py -i "$RFDIFF_DIR"
+
+    # Count remaining valid designs
+    VALID_COUNT=$(find "$RFDIFF_DIR" -maxdepth 1 -name "${PREFIX}_RF*.pdb" 2>/dev/null | wc -l)
+    echo "  Valid backbones: $VALID_COUNT / $NUM_DESIGNS (generated $TOTAL_GENERATED total)"
 done
 
-echo "[Step 1/3] RFdiffusion complete."
-echo "  Output: $RFDIFF_DIR/${PREFIX}_RF*.pdb"
+if [ "$VALID_COUNT" -lt "$NUM_DESIGNS" ]; then
+    echo "WARNING: Only obtained $VALID_COUNT valid backbones after $MAX_ROUNDS rounds ($TOTAL_GENERATED generated)."
+    echo "  Proceeding with $VALID_COUNT designs. Increase MAX_ROUNDS or check motif geometry."
+fi
 
-# ============================================================================
-# STEP 1b: Validate backbones — reject designs with chain breaks or clashes
-# ============================================================================
-
-CURRENT_STEP="Step 1b/3 — Backbone validation"
-
-echo ""
-echo "[Step 1b/3] Validating backbone physical validity..."
-python scripts/validate_backbones.py -i "$RFDIFF_DIR"
-echo ""
+echo "[Step 1/3] RFdiffusion complete. $VALID_COUNT valid backbones."
 
 # ============================================================================
 # STEP 2: AntiBMPNN with motif fixed positions (RFantibody env)
