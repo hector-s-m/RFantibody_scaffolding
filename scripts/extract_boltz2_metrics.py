@@ -597,6 +597,123 @@ def _mean_or_none(values: list) -> float | None:
     return round(sum(valid) / len(valid), 4) if valid else None
 
 
+def _find_designed_pdb(stem: str, designed_pdb_dir: Path) -> Path | None:
+    """Find the designed PDB matching this prediction stem."""
+    designed_pdb = designed_pdb_dir / f'{stem}.pdb'
+    if designed_pdb.exists():
+        return designed_pdb
+    for candidate in designed_pdb_dir.glob(f'{stem}*.pdb'):
+        return candidate
+    return None
+
+
+def _find_motif_json(stem: str, designed_pdb_dir: Path) -> Path | None:
+    """Find motif_fixed.json for this design stem."""
+    import re
+    rfdiff_dir = designed_pdb_dir.parent / 'RFdiffusion_backbones'
+    designs_dir = designed_pdb_dir.parent / 'designs'
+
+    # New convention: PREFIX_RFN_mpnnM → PREFIX_RFN_motif_fixed.json
+    m = re.match(r'^(.+_RF\d+)_mpnn\d+$', stem)
+    if m and rfdiff_dir.exists():
+        candidate = rfdiff_dir / f'{m.group(1)}_motif_fixed.json'
+        if candidate.exists():
+            return candidate
+
+    # Old convention: ab_des_N_dldesign_M → designs/ab_des_N_motif_fixed.json
+    base_design = stem.split('_dldesign_')[0] if '_dldesign_' in stem else stem
+    if designs_dir.exists():
+        candidate = designs_dir / f'{base_design}_motif_fixed.json'
+        if candidate.exists():
+            return candidate
+
+    return None
+
+
+def _extract_single_model_metrics(
+    stem: str,
+    pred_dir: Path,
+    model_idx: int,
+    designed_pdb: Path | None,
+    motif_json: Path | None,
+) -> dict | None:
+    """Extract all metrics for a single diffusion sample (model_idx)."""
+    conf = load_confidence_json(pred_dir, stem, model_idx=model_idx)
+    if conf is None:
+        return None
+
+    m = {}
+
+    # JSON confidence metrics
+    m['ipTM'] = conf.get('iptm')
+    m['pTM'] = conf.get('ptm')
+    m['pLDDT'] = conf.get('complex_plddt')
+    m['iPLDDT'] = conf.get('complex_iplddt')
+    m['confidence_score'] = conf.get('confidence_score')
+    m['iPAE'] = conf.get('complex_ipae')
+
+    # Load PAE, pLDDT, structure for this model
+    pae = load_npz(pred_dir, 'pae', stem, 'pae', model_idx=model_idx)
+    plddt = load_npz(pred_dir, 'plddt', stem, 'plddt', model_idx=model_idx)
+    struct_path = find_predicted_structure(pred_dir, stem, model_idx=model_idx)
+
+    chain_ids = None
+    if struct_path is not None:
+        if str(struct_path).endswith('.cif'):
+            _, chain_ids, _ = parse_cif_ca_coords(struct_path)
+        else:
+            _, chain_ids, _ = parse_ca_coords(struct_path)
+
+    # ipSAE
+    m['ipSAE'] = None
+    if pae is not None and chain_ids is not None and len(chain_ids) == pae.shape[0]:
+        try:
+            ipsae_results = calculate_ipsae(pae, chain_ids)
+            m['ipSAE'] = round(ipsae_results.get('ipSAE', 0.0), 4)
+        except Exception:
+            pass
+
+    # pDockQ, pDockQ2, LIS
+    m['pDockQ'] = None
+    m['pDockQ2'] = None
+    m['LIS'] = None
+    if (pae is not None and plddt is not None
+            and struct_path is not None and chain_ids is not None
+            and len(chain_ids) == pae.shape[0]):
+        try:
+            plddt_trunc = plddt[:len(chain_ids)]
+            contact_scores = calculate_contact_scores(
+                struct_path, pae, plddt_trunc, chain_ids,
+            )
+            m['pDockQ'] = contact_scores['pDockQ']
+            m['pDockQ2'] = contact_scores['pDockQ2']
+            m['LIS'] = contact_scores['LIS']
+        except Exception:
+            pass
+
+    # Binder RMSD
+    m['binder_RMSD'] = None
+    if designed_pdb is not None and struct_path is not None:
+        try:
+            rmsd = compute_binder_rmsd(designed_pdb, struct_path)
+            if rmsd is not None:
+                m['binder_RMSD'] = round(rmsd, 3)
+        except Exception:
+            pass
+
+    # Motif RMSD
+    m['motif_RMSD'] = None
+    if designed_pdb is not None and struct_path is not None and motif_json is not None:
+        try:
+            mrmsd = compute_motif_rmsd(designed_pdb, struct_path, motif_json)
+            if mrmsd is not None:
+                m['motif_RMSD'] = round(mrmsd, 3)
+        except Exception:
+            pass
+
+    return m
+
+
 def extract_metrics_for_prediction(
     stem: str,
     pred_dir: Path,
@@ -604,9 +721,8 @@ def extract_metrics_for_prediction(
 ) -> dict | None:
     """Extract all metrics for one Boltz2 prediction.
 
-    When multiple diffusion samples exist (model_0, model_1, ...),
-    averages scalar metrics across all samples. For structure-dependent
-    metrics (RMSD, pDockQ), uses the best model by confidence_score.
+    Computes every metric independently for each diffusion sample
+    (model_0, model_1, ...) and reports the mean across samples.
     """
 
     # Discover all available models
@@ -616,133 +732,36 @@ def extract_metrics_for_prediction(
         return None
 
     n_models = len(model_jsons)
-    best_model = pick_best_model(pred_dir, stem)
 
-    # --- Collect scalar metrics from ALL models and average ---
-    json_metrics = {
-        'iptm': [], 'ptm': [], 'complex_plddt': [], 'complex_iplddt': [],
-        'confidence_score': [], 'complex_ipae': [],
-    }
-    ipsae_vals = []
+    # Find designed PDB and motif JSON once (shared across all models)
+    designed_pdb = None
+    motif_json = None
+    if designed_pdb_dir is not None:
+        designed_pdb = _find_designed_pdb(stem, designed_pdb_dir)
+        motif_json = _find_motif_json(stem, designed_pdb_dir)
+
+    # Extract metrics for EACH model
+    all_model_metrics = []
     for model_idx in range(n_models):
-        conf = load_confidence_json(pred_dir, stem, model_idx=model_idx)
-        if conf is None:
-            continue
-        for key in json_metrics:
-            val = conf.get(key)
-            if val is not None:
-                json_metrics[key].append(val)
+        m = _extract_single_model_metrics(
+            stem, pred_dir, model_idx, designed_pdb, motif_json,
+        )
+        if m is not None:
+            all_model_metrics.append(m)
 
-        # ipSAE per model (needs PAE + chain IDs)
-        pae_i = load_npz(pred_dir, 'pae', stem, 'pae', model_idx=model_idx)
-        struct_i = find_predicted_structure(pred_dir, stem, model_idx=model_idx)
-        if pae_i is not None and struct_i is not None:
-            if str(struct_i).endswith('.cif'):
-                _, chains_i, _ = parse_cif_ca_coords(struct_i)
-            else:
-                _, chains_i, _ = parse_ca_coords(struct_i)
-            if len(chains_i) == pae_i.shape[0]:
-                try:
-                    ipsae_i = calculate_ipsae(pae_i, chains_i)
-                    ipsae_vals.append(ipsae_i.get('ipSAE', 0.0))
-                except Exception:
-                    pass
+    if not all_model_metrics:
+        print(f'  Warning: No valid models for {stem}')
+        return None
 
-    result = {'design': stem, 'n_models': n_models, 'best_model': best_model}
+    # Average all metrics across models
+    metric_keys = [
+        'ipTM', 'pTM', 'pLDDT', 'iPLDDT', 'confidence_score', 'iPAE',
+        'ipSAE', 'pDockQ', 'pDockQ2', 'LIS', 'binder_RMSD', 'motif_RMSD',
+    ]
 
-    # Averaged JSON metrics
-    result['ipTM'] = _mean_or_none(json_metrics['iptm'])
-    result['pTM'] = _mean_or_none(json_metrics['ptm'])
-    result['pLDDT'] = _mean_or_none(json_metrics['complex_plddt'])
-    result['iPLDDT'] = _mean_or_none(json_metrics['complex_iplddt'])
-    result['confidence_score'] = _mean_or_none(json_metrics['confidence_score'])
-    result['iPAE'] = _mean_or_none(json_metrics['complex_ipae'])
-    result['ipSAE'] = _mean_or_none(ipsae_vals)
-
-    # --- Structure-dependent metrics use BEST model ---
-    pae = load_npz(pred_dir, 'pae', stem, 'pae', model_idx=best_model)
-    plddt = load_npz(pred_dir, 'plddt', stem, 'plddt', model_idx=best_model)
-    struct_path = find_predicted_structure(pred_dir, stem, model_idx=best_model)
-    chain_ids = None
-    if struct_path is not None:
-        if str(struct_path).endswith('.cif'):
-            _, chain_ids, _ = parse_cif_ca_coords(struct_path)
-        else:
-            _, chain_ids, _ = parse_ca_coords(struct_path)
-
-    # --- pDockQ, pDockQ2, LIS (from best model structure) ---
-    if (pae is not None and plddt is not None
-            and struct_path is not None and chain_ids is not None
-            and len(chain_ids) == pae.shape[0]):
-        try:
-            plddt_trunc = plddt[:len(chain_ids)]
-            contact_scores = calculate_contact_scores(
-                struct_path, pae, plddt_trunc, chain_ids,
-            )
-            result['pDockQ'] = contact_scores['pDockQ']
-            result['pDockQ2'] = contact_scores['pDockQ2']
-            result['LIS'] = contact_scores['LIS']
-        except Exception as e:
-            print(f'  Warning: Contact scores failed for {stem}: {e}')
-            result['pDockQ'] = None
-            result['pDockQ2'] = None
-            result['LIS'] = None
-    else:
-        result['pDockQ'] = None
-        result['pDockQ2'] = None
-        result['LIS'] = None
-
-    # --- Binder RMSD + Motif RMSD (from best model structure) ---
-    result['binder_RMSD'] = None
-    result['motif_RMSD'] = None
-    if designed_pdb_dir is not None and struct_path is not None:
-        # Try to find matching designed PDB
-        designed_pdb = designed_pdb_dir / f'{stem}.pdb'
-        if not designed_pdb.exists():
-            # Try without _model_0 suffix or other variants
-            for candidate in designed_pdb_dir.glob(f'{stem}*.pdb'):
-                designed_pdb = candidate
-                break
-        if designed_pdb.exists():
-            try:
-                rmsd = compute_binder_rmsd(designed_pdb, struct_path)
-                if rmsd is not None:
-                    result['binder_RMSD'] = round(rmsd, 3)
-            except Exception as e:
-                print(f'  Warning: RMSD failed for {stem}: {e}')
-
-            # --- Motif RMSD ---
-            # Look for motif_fixed.json from RFdiffusion output
-            # New naming: PREFIX_RFN_mpnnM → RF file is PREFIX_RFN
-            # Old naming: ab_des_N_dldesign_M → ab_des_N
-            # Try new naming first, then fall back to old
-            import re
-            motif_json = None
-            rfdiff_dir = designed_pdb_dir.parent / 'RFdiffusion_backbones'
-            designs_dir = designed_pdb_dir.parent / 'designs'
-
-            # New convention: PREFIX_RFN_mpnnM → PREFIX_RFN_motif_fixed.json
-            m = re.match(r'^(.+_RF\d+)_mpnn\d+$', stem)
-            if m and rfdiff_dir.exists():
-                rf_base = m.group(1)  # e.g. PROTEIN_Nb_RF0
-                candidate = rfdiff_dir / f'{rf_base}_motif_fixed.json'
-                if candidate.exists():
-                    motif_json = candidate
-
-            # Old convention fallback: ab_des_N_dldesign_M → designs/ab_des_N_motif_fixed.json
-            if motif_json is None:
-                base_design = stem.split('_dldesign_')[0] if '_dldesign_' in stem else stem
-                if designs_dir.exists():
-                    candidate = designs_dir / f'{base_design}_motif_fixed.json'
-                    if candidate.exists():
-                        motif_json = candidate
-            if motif_json is not None:
-                try:
-                    mrmsd = compute_motif_rmsd(designed_pdb, struct_path, motif_json)
-                    if mrmsd is not None:
-                        result['motif_RMSD'] = round(mrmsd, 3)
-                except Exception as e:
-                    print(f'  Warning: Motif RMSD failed for {stem}: {e}')
+    result = {'design': stem, 'n_models': len(all_model_metrics)}
+    for key in metric_keys:
+        result[key] = _mean_or_none([m[key] for m in all_model_metrics])
 
     return result
 
