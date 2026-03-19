@@ -724,42 +724,53 @@ class AbPose():
         chain_data.mask[motif_start_in_chain:motif_end_in_chain] = motif_data['motif_mask']
         chain_data.seq[motif_start_in_chain:motif_end_in_chain] = motif_data['motif_seq']
 
-        # Initialize flank residues near motif endpoints so diffusion starts
-        # from a physically connected configuration (not at origin).
-        # N-flank: interpolate between the framework anchor and motif N-terminus
-        # C-flank: interpolate between motif C-terminus and framework anchor
-        noise_scale = 2.0  # Angstroms of random perturbation
+        # Initialize flank residues near motif endpoints with proper backbone
+        # geometry so diffusion starts from a physically connected configuration.
+        # N/CA/C are placed with correct bond lengths (~1.45/1.52Å) along the
+        # interpolated backbone direction, with small noise for diversity.
+        noise_scale = 0.5  # Angstroms of perturbation (small — geometry matters)
 
-        if flank_n > 0:
+        def _place_backbone(ca_pos, direction, noise_scale):
+            """Place N, CA, C atoms with correct geometry around a CA position.
+            N is ~1.45Å before CA, C is ~1.52Å after CA along direction."""
+            d = direction / (np.linalg.norm(direction) + 1e-8)
+            noise = np.random.randn(3).astype(np.float32) * noise_scale
+            n_pos = ca_pos - d * 1.45 + noise
+            c_pos = ca_pos + d * 1.52 + noise
+            return n_pos, ca_pos + noise * 0.3, c_pos  # Less noise on CA
+
+        if flank_n > 0 and loop_indices[0] > 0:
             # Framework anchor = residue just before the loop
-            anchor_n_idx = loop_indices[0] - 1 if loop_indices[0] > 0 else loop_indices[0]
-            anchor_n_ca = chain_data.xyz[anchor_n_idx, 1, :]  # CA of anchor
-            motif_n_ca = motif_data['motif_xyz'][0, 1, :]      # CA of first motif residue
+            anchor_n_ca = chain_data.xyz[loop_indices[0] - 1, 1, :]
+            motif_n_ca = motif_data['motif_xyz'][0, 1, :]
+            backbone_dir = motif_n_ca - anchor_n_ca
             for fi in range(flank_n):
-                t = (fi + 1) / (flank_n + 1)  # interpolation parameter
+                t = (fi + 1) / (flank_n + 1)
                 interp_ca = anchor_n_ca * (1 - t) + motif_n_ca * t
-                noise = np.random.randn(3).astype(np.float32) * noise_scale
-                # Set backbone atoms (N, CA, C) near interpolated position
-                for atom_idx in range(3):
-                    chain_data.xyz[loop_indices[fi], atom_idx, :] = interp_ca + noise
-                chain_data.mask[loop_indices[fi], :3] = True
+                n_pos, ca_pos, c_pos = _place_backbone(interp_ca, backbone_dir, noise_scale)
+                idx = loop_indices[fi]
+                chain_data.xyz[idx, 0, :] = n_pos   # N atom
+                chain_data.xyz[idx, 1, :] = ca_pos   # CA atom
+                chain_data.xyz[idx, 2, :] = c_pos    # C atom
+                chain_data.mask[idx, :3] = True
 
-        if flank_c > 0:
+        if flank_c > 0 and loop_indices[-1] < len(chain_data.seq) - 1:
             # Framework anchor = residue just after the loop
-            anchor_c_idx = loop_indices[-1] + 1 if loop_indices[-1] < len(chain_data.seq) - 1 else loop_indices[-1]
-            anchor_c_ca = chain_data.xyz[anchor_c_idx, 1, :]  # CA of anchor
-            motif_c_ca = motif_data['motif_xyz'][-1, 1, :]     # CA of last motif residue
+            anchor_c_ca = chain_data.xyz[loop_indices[-1] + 1, 1, :]
+            motif_c_ca = motif_data['motif_xyz'][-1, 1, :]
+            backbone_dir = anchor_c_ca - motif_c_ca
             for fi in range(flank_c):
-                t = (fi + 1) / (flank_c + 1)  # interpolation parameter
+                t = (fi + 1) / (flank_c + 1)
                 interp_ca = motif_c_ca * (1 - t) + anchor_c_ca * t
-                noise = np.random.randn(3).astype(np.float32) * noise_scale
-                flank_c_idx = loop_indices[flank_n + len(motif_data['motif_seq']) + fi]
-                for atom_idx in range(3):
-                    chain_data.xyz[flank_c_idx, atom_idx, :] = interp_ca + noise
-                chain_data.mask[flank_c_idx, :3] = True
+                n_pos, ca_pos, c_pos = _place_backbone(interp_ca, backbone_dir, noise_scale)
+                idx = loop_indices[flank_n + len(motif_data['motif_seq']) + fi]
+                chain_data.xyz[idx, 0, :] = n_pos
+                chain_data.xyz[idx, 1, :] = ca_pos
+                chain_data.xyz[idx, 2, :] = c_pos
+                chain_data.mask[idx, :3] = True
 
-        print(f"  Flank initialization: N-flank={flank_n} residues near motif N-term, "
-              f"C-flank={flank_c} residues near motif C-term")
+        print(f"  Flank initialization: N-flank={flank_n} residues, "
+              f"C-flank={flank_c} residues (proper backbone geometry)")
 
         # Compute global indices (H comes first, then L, then T)
         if chain_letter == 'H':

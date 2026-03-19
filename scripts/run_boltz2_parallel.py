@@ -144,16 +144,17 @@ def main():
             rc = proc.wait()
             if rc == 0:
                 completed += 1
+                if proc.stdout:
+                    proc.stdout.close()  # Free buffered output
                 print(f"  OK: {stem} ({completed}/{total})")
             else:
                 failed += 1
-                # Capture output for debugging
                 stdout = proc.stdout.read().decode() if proc.stdout else ""
+                if proc.stdout:
+                    proc.stdout.close()
                 print(f"  FAILED: {stem} (exit code {rc})")
                 if stdout:
-                    # Print last few lines of output
-                    lines = stdout.strip().split("\n")
-                    for line in lines[-5:]:
+                    for line in stdout.strip().split("\n")[-5:]:
                         print(f"    {line}")
 
         elapsed = time.time() - start_time

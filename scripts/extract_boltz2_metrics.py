@@ -613,9 +613,15 @@ def _extract_single_model_metrics(
     plddt = load_npz(pred_dir, 'plddt', stem, 'plddt', model_idx=model_idx)
     struct_path = find_predicted_structure(pred_dir, stem, model_idx=model_idx)
 
-    chain_ids = None
+    # Parse predicted structure ONCE (reused for chain_ids, ipSAE, contacts, RMSD)
+    pred_coords, chain_ids, pred_resnums = None, None, None
     if struct_path is not None:
-        _, chain_ids, _ = parse_structure(struct_path)
+        pred_coords, chain_ids, pred_resnums = parse_structure(struct_path)
+
+    # Parse designed structure ONCE (reused for binder RMSD + motif RMSD)
+    des_coords, des_chains, des_resnums = None, None, None
+    if designed_pdb is not None:
+        des_coords, des_chains, des_resnums = parse_structure(designed_pdb)
 
     # ipSAE
     m['ipSAE'] = None
@@ -644,19 +650,27 @@ def _extract_single_model_metrics(
         except Exception as e:
             print(f'    Warning: contact scores failed for model_{model_idx}: {e}')
 
-    # Binder RMSD
+    # Binder RMSD (uses pre-parsed coords — no re-parse)
     m['binder_RMSD'] = None
-    if designed_pdb is not None and struct_path is not None:
+    if des_coords is not None and pred_coords is not None:
         try:
-            rmsd = compute_binder_rmsd(designed_pdb, struct_path)
-            if rmsd is not None:
-                m['binder_RMSD'] = round(rmsd, 3)
+            des_binder, _ = detect_binder_target(des_chains, is_designed=True)
+            pred_binder, _ = detect_binder_target(chain_ids, is_designed=False)
+            if des_binder and pred_binder:
+                des_mask = np.array([c in des_binder for c in des_chains])
+                pred_mask = np.array([c in pred_binder for c in chain_ids])
+                d_b = des_coords[des_mask]
+                p_b = pred_coords[pred_mask]
+                if len(d_b) > 0 and len(p_b) > 0:
+                    n = min(len(d_b), len(p_b))
+                    diff = d_b[:n] - p_b[:n]
+                    m['binder_RMSD'] = round(float(np.sqrt(np.mean(np.sum(diff**2, axis=1)))), 3)
         except Exception as e:
             print(f'    Warning: binder RMSD failed for model_{model_idx}: {e}')
 
-    # Motif RMSD
+    # Motif RMSD (uses pre-parsed coords — no re-parse)
     m['motif_RMSD'] = None
-    if designed_pdb is not None and struct_path is not None and motif_json is not None:
+    if des_coords is not None and pred_coords is not None and motif_json is not None:
         try:
             mrmsd = compute_motif_rmsd(designed_pdb, struct_path, motif_json)
             if mrmsd is not None:
