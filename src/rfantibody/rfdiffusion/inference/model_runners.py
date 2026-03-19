@@ -834,9 +834,46 @@ class AbSampler(Sampler):
                 'c_boundary_dist': round(c_boundary, 3),
             })
 
-            # Snap motif back to true coordinates
-            x_t_1[motif_idx] = x_t[motif_idx]
-            px0[motif_idx] = x_t[motif_idx]
+            # Align binder onto true motif position (preserves internal connectivity).
+            # The model predicts a connected loop with the motif at a drifted position.
+            # Instead of just snapping motif coords back (which breaks flanks), we
+            # rigidly transform the entire binder so the motif lands on its true coords.
+            binder_len = self.pose.binder_len()
+            pred_motif_ca = x_t_1[motif_idx, 1, :].detach()  # [M, 3]
+            true_motif_ca = x_t[motif_idx, 1, :].detach()     # [M, 3]
+
+            # Kabsch alignment: find rotation R and translation t such that
+            # R @ pred_motif + t ≈ true_motif
+            pred_center = pred_motif_ca.mean(dim=0)
+            true_center = true_motif_ca.mean(dim=0)
+            pred_centered = pred_motif_ca - pred_center
+            true_centered = true_motif_ca - true_center
+
+            # Covariance matrix
+            H = pred_centered.T @ true_centered  # [3, 3]
+            U, S, Vt = torch.linalg.svd(H)
+            # Handle reflection
+            d = torch.det(Vt.T @ U.T)
+            sign_matrix = torch.diag(torch.tensor([1.0, 1.0, d.sign()], device=H.device))
+            R = Vt.T @ sign_matrix @ U.T  # [3, 3] rotation
+
+            # Apply rigid transform to entire binder (residues 0:binder_len)
+            # This preserves all bond distances within the binder while moving
+            # the motif to its true position
+            binder_coords = x_t_1[:binder_len].clone()  # [binder_len, 14, 3]
+            for atom_dim in range(binder_coords.shape[1]):
+                binder_coords[:, atom_dim, :] = (
+                    (binder_coords[:, atom_dim, :] - pred_center) @ R.T + true_center
+                )
+            x_t_1[:binder_len] = binder_coords
+
+            # Same transform for px0 (trajectory consistency)
+            px0_binder = px0[:binder_len].clone()
+            for atom_dim in range(px0_binder.shape[1]):
+                px0_binder[:, atom_dim, :] = (
+                    (px0_binder[:, atom_dim, :] - pred_center) @ R.T + true_center
+                )
+            px0[:binder_len] = px0_binder
 
         return px0, x_t_1, seq_t_1, tors_t_1, plddt
 
