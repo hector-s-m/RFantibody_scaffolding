@@ -395,7 +395,7 @@ MPNN_COUNT=$(find "$MPNN_DIR" -name "*.pdb" 2>/dev/null | wc -l)
 echo "[Step 2/3] AntiBMPNN complete. Generated $MPNN_COUNT sequence designs."
 echo "  Output: $MPNN_DIR/${PREFIX}_RF*_mpnn*.pdb"
 
-conda deactivate 2>/dev/null || true
+# Stay in RFantibody env — YAML prep only needs pyyaml (already available)
 
 # ============================================================================
 # STEP 3: Boltz2 — Structure prediction + scoring (boltz_2.2.1 env)
@@ -408,9 +408,7 @@ echo "[Step 3/3] Running Boltz2 structure prediction + scoring..."
 echo "  - Converting PDBs to Boltz2 YAML format"
 echo "  - Predicting with $DIFFUSION_SAMPLES diffusion sample(s) per design (batch=$BOLTZ_BATCH_SIZE parallel)"
 
-# 3a. Prepare Boltz2 YAML inputs from the renamed MPNN outputs
-conda deactivate 2>/dev/null || true
-conda activate "$RFANTIBODY_ENV"
+# 3a. Prepare Boltz2 YAML inputs (still in RFantibody env from Steps 1-2)
 
 python scripts/prepare_boltz2_input.py \
     -i "$MPNN_DIR" \
