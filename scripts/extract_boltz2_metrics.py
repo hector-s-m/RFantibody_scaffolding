@@ -208,21 +208,19 @@ def parse_cif_ca_coords(cif_path: Path) -> tuple[np.ndarray, list[str], list[int
 def compute_binder_rmsd(
     designed_pdb: Path,
     predicted_pdb: Path,
-    binder_chains: set[str] = None,
 ) -> float | None:
     """Compute CA RMSD of binder chains between designed and predicted structures.
+
+    Auto-detects binder chains: uses all chains EXCEPT the last chain
+    (assumed to be the target). Handles both HLT and ABC naming.
 
     Args:
         designed_pdb: PDB from AntiBMPNN (input to Boltz2).
         predicted_pdb: Structure predicted by Boltz2.
-        binder_chains: Set of chain IDs considered "binder" (default: H, L).
 
     Returns:
         RMSD in Angstroms, or None if structures can't be aligned.
     """
-    if binder_chains is None:
-        binder_chains = {'H', 'L', 'A', 'B'}  # Cover both HLT and ABC naming
-
     # Parse designed structure
     if str(designed_pdb).endswith('.cif'):
         des_coords, des_chains, _ = parse_cif_ca_coords(designed_pdb)
@@ -235,9 +233,19 @@ def compute_binder_rmsd(
     else:
         pred_coords, pred_chains, _ = parse_ca_coords(predicted_pdb)
 
-    # Filter to binder chains
-    des_mask = np.array([c in binder_chains for c in des_chains])
-    pred_mask = np.array([c in binder_chains for c in pred_chains])
+    if len(des_coords) == 0 or len(pred_coords) == 0:
+        return None
+
+    # Auto-detect binder chains: all chains except the last one (target)
+    # Works for both HLT (binder=H,L target=T) and ABC (binder=A,B target=C)
+    des_unique = list(dict.fromkeys(des_chains))    # preserve order
+    pred_unique = list(dict.fromkeys(pred_chains))
+
+    des_binder_chains = set(des_unique[:-1]) if len(des_unique) > 1 else set(des_unique)
+    pred_binder_chains = set(pred_unique[:-1]) if len(pred_unique) > 1 else set(pred_unique)
+
+    des_mask = np.array([c in des_binder_chains for c in des_chains])
+    pred_mask = np.array([c in pred_binder_chains for c in pred_chains])
 
     des_binder = des_coords[des_mask]
     pred_binder = pred_coords[pred_mask]
@@ -294,8 +302,15 @@ def compute_motif_rmsd(
     else:
         pred_coords, pred_chains, pred_resnums = parse_ca_coords(predicted_pdb)
 
-    # Boltz2 remaps chains (H→A, L→B, T→C), so build both mappings
-    chain_remap = {'H': 'A', 'L': 'B', 'T': 'C'}
+    # Auto-detect chain mapping between designed and predicted structures.
+    # Designed PDB may have H/L/T; predicted may have A/B/C (or same).
+    # Build mapping by chain order (1st→1st, 2nd→2nd, etc.)
+    des_unique = list(dict.fromkeys(des_chains))
+    pred_unique = list(dict.fromkeys(pred_chains))
+    chain_remap = {}
+    for i, ch in enumerate(des_unique):
+        if i < len(pred_unique):
+            chain_remap[ch] = pred_unique[i]
 
     des_motif_coords = []
     pred_motif_coords = []
@@ -308,7 +323,7 @@ def compute_motif_rmsd(
                     des_motif_coords.append(des_coords[i])
                     break
 
-        # Find motif residues in predicted structure (may use remapped chain IDs)
+        # Find motif residues in predicted structure (use auto-detected mapping)
         pred_chain = chain_remap.get(chain, chain)
         for pos in positions:
             for i, (c, r) in enumerate(zip(pred_chains, pred_resnums)):
@@ -418,10 +433,12 @@ def calculate_contact_scores(
         Dict with 'pDockQ', 'pDockQ2', 'LIS'.
     """
     chain_ids = np.array(chain_ids)
+    # Auto-detect binder/target: all chains except last = binder, last = target
+    unique_chains = list(dict.fromkeys(chain_ids))
     if binder_chains is None:
-        binder_chains = {'H', 'L', 'A', 'B'}
+        binder_chains = set(unique_chains[:-1]) if len(unique_chains) > 1 else set()
     if target_chains is None:
-        target_chains = {'T', 'C'}
+        target_chains = {unique_chains[-1]} if unique_chains else set()
 
     binder_mask = np.array([c in binder_chains for c in chain_ids])
     target_mask = np.array([c in target_chains for c in chain_ids])

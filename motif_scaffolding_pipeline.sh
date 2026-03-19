@@ -213,10 +213,11 @@ REGISTRY_CSV="$OUTPUT_DIR/designs_registry.csv"
 
 mkdir -p "$RFDIFF_DIR" "$MPNN_DIR" "$BOLTZ_PRED_DIR"
 
-# Internal working directories (not user-facing)
+# Internal working directories (not user-facing) — clean at start for idempotent re-runs
 MPNN_RAW_DIR="$OUTPUT_DIR/_mpnn_raw"
 BOLTZ_YAML_DIR="$OUTPUT_DIR/_boltz_yaml"
 BOLTZ_RAW_DIR="$OUTPUT_DIR/_boltz_raw"
+rm -rf "$MPNN_RAW_DIR" "$BOLTZ_YAML_DIR" "$BOLTZ_RAW_DIR"
 mkdir -p "$MPNN_RAW_DIR" "$BOLTZ_YAML_DIR" "$BOLTZ_RAW_DIR"
 
 # Initialize conda
@@ -456,17 +457,8 @@ done
 PRED_COUNT=$(find "$BOLTZ_PRED_DIR" -name "*.pdb" 2>/dev/null | wc -l)
 echo "  Converted $PRED_COUNT structures to PDB format"
 
-# 3d. Copy confidence JSONs and NPZ files alongside PDB predictions
-# (needed for metric extraction)
-for json_file in $(find "$BOLTZ_RAW_DIR" -name "confidence_*.json" -type f | sort); do
-    cp "$json_file" "$BOLTZ_PRED_DIR/"
-done
-for npz_file in $(find "$BOLTZ_RAW_DIR" -name "*.npz" -type f | sort); do
-    cp "$npz_file" "$BOLTZ_PRED_DIR/"
-done
-
-# 3e. Extract metrics
-CURRENT_STEP="Step 3e/3 — Extract Boltz2 metrics"
+# 3d. Extract metrics (reads from _boltz_raw for JSON/NPZ, MPNN_DIR for designed PDBs)
+CURRENT_STEP="Step 3d/3 — Extract Boltz2 metrics"
 
 python scripts/extract_boltz2_metrics.py \
     -i "$BOLTZ_RAW_DIR" \
