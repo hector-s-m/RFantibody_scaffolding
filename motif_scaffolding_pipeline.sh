@@ -92,8 +92,8 @@ DESIGN_LOOPS=$(json_get "rfdiffusion" "design_loops")
 HOTSPOTS=$(json_get "rfdiffusion" "hotspots")
 DIFFUSER_T=$(json_get "rfdiffusion" "diffuser_T")
 
-NUM_SEQS=$(json_get "mpnn" "num_seqs")
-SAMPLING_TEMP=$(json_get "mpnn" "sampling_temp")
+NUM_SEQS=$(json_get "antibmpnn" "num_seqs")
+SAMPLING_TEMP=$(json_get "antibmpnn" "sampling_temp")
 
 DIFFUSION_SAMPLES=$(json_get "boltz2" "diffusion_samples")
 BOLTZ_BATCH_SIZE=$(json_get "boltz2" "batch_size")

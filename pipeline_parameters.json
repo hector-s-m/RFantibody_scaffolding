@@ -17,7 +17,7 @@
         "diffuser_T": 200
     },
 
-    "mpnn": {
+    "antibmpnn": {
         "num_seqs": 4,
         "sampling_temp": 0.2
     },
