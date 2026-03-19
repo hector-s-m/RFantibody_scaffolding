@@ -724,6 +724,43 @@ class AbPose():
         chain_data.mask[motif_start_in_chain:motif_end_in_chain] = motif_data['motif_mask']
         chain_data.seq[motif_start_in_chain:motif_end_in_chain] = motif_data['motif_seq']
 
+        # Initialize flank residues near motif endpoints so diffusion starts
+        # from a physically connected configuration (not at origin).
+        # N-flank: interpolate between the framework anchor and motif N-terminus
+        # C-flank: interpolate between motif C-terminus and framework anchor
+        noise_scale = 2.0  # Angstroms of random perturbation
+
+        if flank_n > 0:
+            # Framework anchor = residue just before the loop
+            anchor_n_idx = loop_indices[0] - 1 if loop_indices[0] > 0 else loop_indices[0]
+            anchor_n_ca = chain_data.xyz[anchor_n_idx, 1, :]  # CA of anchor
+            motif_n_ca = motif_data['motif_xyz'][0, 1, :]      # CA of first motif residue
+            for fi in range(flank_n):
+                t = (fi + 1) / (flank_n + 1)  # interpolation parameter
+                interp_ca = anchor_n_ca * (1 - t) + motif_n_ca * t
+                noise = np.random.randn(3).astype(np.float32) * noise_scale
+                # Set backbone atoms (N, CA, C) near interpolated position
+                for atom_idx in range(3):
+                    chain_data.xyz[loop_indices[fi], atom_idx, :] = interp_ca + noise
+                chain_data.mask[loop_indices[fi], :3] = True
+
+        if flank_c > 0:
+            # Framework anchor = residue just after the loop
+            anchor_c_idx = loop_indices[-1] + 1 if loop_indices[-1] < len(chain_data.seq) - 1 else loop_indices[-1]
+            anchor_c_ca = chain_data.xyz[anchor_c_idx, 1, :]  # CA of anchor
+            motif_c_ca = motif_data['motif_xyz'][-1, 1, :]     # CA of last motif residue
+            for fi in range(flank_c):
+                t = (fi + 1) / (flank_c + 1)  # interpolation parameter
+                interp_ca = motif_c_ca * (1 - t) + anchor_c_ca * t
+                noise = np.random.randn(3).astype(np.float32) * noise_scale
+                flank_c_idx = loop_indices[flank_n + len(motif_data['motif_seq']) + fi]
+                for atom_idx in range(3):
+                    chain_data.xyz[flank_c_idx, atom_idx, :] = interp_ca + noise
+                chain_data.mask[flank_c_idx, :3] = True
+
+        print(f"  Flank initialization: N-flank={flank_n} residues near motif N-term, "
+              f"C-flank={flank_c} residues near motif C-term")
+
         # Compute global indices (H comes first, then L, then T)
         if chain_letter == 'H':
             global_offset = 0
