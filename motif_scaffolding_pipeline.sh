@@ -311,6 +311,17 @@ echo "[Step 1/3] RFdiffusion complete."
 echo "  Output: $RFDIFF_DIR/${PREFIX}_RF*.pdb"
 
 # ============================================================================
+# STEP 1b: Validate backbones — reject designs with chain breaks or clashes
+# ============================================================================
+
+CURRENT_STEP="Step 1b/3 — Backbone validation"
+
+echo ""
+echo "[Step 1b/3] Validating backbone physical validity..."
+python scripts/validate_backbones.py -i "$RFDIFF_DIR"
+echo ""
+
+# ============================================================================
 # STEP 2: AntiBMPNN with motif fixed positions (RFantibody env)
 # ============================================================================
 
