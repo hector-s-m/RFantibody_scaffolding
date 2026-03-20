@@ -921,7 +921,7 @@ class motif_connectivity(Potential):
     def compute(self, seq, xyz):
         weight = self._dynamic_weight()
         if weight < 1e-6:
-            return torch.tensor(0.0, device=xyz.device, requires_grad=True)
+            return (xyz * 0).sum()  # Zero but connected to xyz for gradient flow
 
         # Atom indices: N=0, CA=1, C=2
         N_atoms = xyz[:, 0, :]   # [L, 3] — nitrogen atoms
@@ -1001,7 +1001,7 @@ class motif_position(Potential):
     def compute(self, seq, xyz):
         weight = self._dynamic_weight()
         if weight < 1e-6:
-            return torch.tensor(0.0, device=xyz.device, requires_grad=True)
+            return (xyz * 0).sum()  # Zero but connected to xyz for gradient flow
 
         total_penalty = torch.tensor(0.0, device=xyz.device)
 
