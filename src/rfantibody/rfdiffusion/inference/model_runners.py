@@ -579,6 +579,35 @@ class AbSampler(Sampler):
 
         xT = torch.clone(fa_stack[-1].squeeze()[:,:14])
 
+        # Re-center noised binder coordinates on the motif center of mass.
+        # After full noising (T=200), binder atoms are scattered randomly.
+        # Translating them so their center of mass overlaps with the motif's
+        # center of mass ensures the binder starts spatially near the motif,
+        # not 20+Å away. This dramatically reduces the distance the model
+        # needs to close during denoising.
+        if self.motif_global_indices is not None:
+            motif_idx_t = torch.tensor(self.motif_global_indices)
+            binder_len = self.pose.binder_len()
+
+            # True motif center of mass (CA atoms)
+            true_motif_ca = self.ab_item.inputs.xyz_true[motif_idx_t, 1, :]
+            motif_com = true_motif_ca.mean(dim=0)
+
+            # Current binder center of mass (CA atoms, excluding motif which may be NaN)
+            binder_ca = xT[:binder_len, 1, :]
+            binder_com = binder_ca.mean(dim=0)
+
+            # Translate all binder atoms so binder COM = motif COM
+            shift = motif_com - binder_com
+            xT[:binder_len] = xT[:binder_len] + shift[None, None, :]
+
+            # Also snap motif to exact true coordinates in the initial xT
+            n_atoms_xt = xT.shape[1]
+            xT[motif_idx_t] = self.ab_item.inputs.xyz_true[motif_idx_t, :n_atoms_xt, :]
+
+            print(f"  Centered binder on motif COM (shift={float(shift.norm()):.1f}Å), "
+                  f"snapped motif to true coords in xT")
+
         #### 7) Mask the input sequence of the CDR loops
         ####################################################
         seq_T = nn.one_hot(self.ab_item.inputs.seq_true, num_classes=22).float()
@@ -842,18 +871,29 @@ class AbSampler(Sampler):
             tors_t_1 = torch.ones((self.mask_str.shape[-1], 10, 2))
             px0 = px0.to(x_t.device)
 
-        # --- Motif scaffolding: diagnostics only (no snap-back, no Kabsch) ---
-        # The motif diffuses freely. Two springs guide it:
-        #   motif_position: pulls backbone atoms toward true coords
-        #   motif_connectivity: pulls C-N bonds toward 1.33Å
-        # No hard coordinate overrides — springs handle everything.
+        # --- Motif scaffolding: hard fix early, soft springs late ---
+        # t=200→101: snap motif back to exact true coords (hard constraint)
+        #            The binder is still noisy; fixing the motif gives the model
+        #            a stable reference point to denoise around.
+        # t=100→1:   soft springs only (motif_position + motif_connectivity)
+        #            The structure is resolving; springs guide connectivity
+        #            while allowing the model slight freedom to optimize geometry.
         if self.motif_global_indices is not None:
             motif_idx = torch.tensor(self.motif_global_indices, device=x_t.device)
-            true_motif_ca = self.ab_item.inputs.xyz_true[motif_idx, 1, :].to(x_t.device)
+            true_motif_coords = self.ab_item.inputs.xyz_true[motif_idx].to(x_t.device)
+            true_motif_ca = true_motif_coords[:, 1, :]
 
-            # Motif drift from true position (should converge to <0.2Å)
+            # Measure drift before any correction
             motif_ca_pred = x_t_1[motif_idx, 1, :]
             motif_drift = float(torch.sqrt(((motif_ca_pred - true_motif_ca) ** 2).sum(-1).mean()))
+
+            # Hard snap-back for t > 100 (early/mid diffusion)
+            T_half = int(self.diffuser_conf.T) // 2
+            if t > T_half:
+                n_atoms = x_t_1.shape[1]
+                x_t_1[motif_idx] = true_motif_coords[:, :n_atoms, :]
+                px0[motif_idx] = true_motif_coords[:, :n_atoms, :]
+                motif_drift = 0.0  # After snap-back, drift is zero
 
             # Track boundary distances for diagnostics
             first_motif = self.motif_global_indices[0]
@@ -869,11 +909,12 @@ class AbSampler(Sampler):
             conn_w = self._motif_conn_potential._dynamic_weight() if hasattr(self, '_motif_conn_potential') else 0.0
             pos_w = self._motif_pos_potential._dynamic_weight() if hasattr(self, '_motif_pos_potential') else 0.0
 
+            mode = "FIXED" if t > T_half else "spring"
             self._log.info(
                 f'Timestep {t}: drift={motif_drift:.2f}Å, '
                 f'C-N: {n_bond:.2f}/{c_bond:.2f}Å, '
                 f'CA-CA: {n_ca:.2f}/{c_ca:.2f}Å, '
-                f'w_pos={pos_w:.3f} w_conn={conn_w:.3f}')
+                f'w_pos={pos_w:.3f} w_conn={conn_w:.3f} [{mode}]')
 
             if not hasattr(self, '_motif_diagnostics'):
                 self._motif_diagnostics = []
