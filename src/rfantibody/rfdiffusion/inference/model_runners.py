@@ -710,8 +710,10 @@ class AbSampler(Sampler):
             # Summary: final timestep values
             final = self._motif_diagnostics[-1]
             data['final_motif_drift'] = final['motif_drift']
-            data['final_n_boundary_dist'] = final['n_boundary_dist']
-            data['final_c_boundary_dist'] = final['c_boundary_dist']
+            data['final_n_bond_CN'] = final.get('n_bond_CN', final.get('n_boundary_dist', 0))
+            data['final_c_bond_CN'] = final.get('c_bond_CN', final.get('c_boundary_dist', 0))
+            data['final_n_dist_CA'] = final.get('n_dist_CA', 0)
+            data['final_c_dist_CA'] = final.get('c_dist_CA', 0)
         return data
 
     def get_motif_fixed_positions_for_mpnn(self) -> dict | None:
