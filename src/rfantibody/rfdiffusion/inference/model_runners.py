@@ -579,33 +579,39 @@ class AbSampler(Sampler):
 
         xT = torch.clone(fa_stack[-1].squeeze()[:,:14])
 
-        # Re-center noised binder coordinates on the motif center of mass.
-        # After full noising (T=200), binder atoms are scattered randomly.
-        # Translating them so their center of mass overlaps with the motif's
-        # center of mass ensures the binder starts spatially near the motif,
-        # not 20+Å away. This dramatically reduces the distance the model
-        # needs to close during denoising.
+        # Re-center noised binder coordinates on the TARGET center of mass.
+        # After full noising (T=200), binder atoms are scattered randomly
+        # (centered at origin). The model expects the binder near the target
+        # (that's what antibodies do — dock to targets). The motif is already
+        # positioned correctly relative to the target (from the crystal structure).
+        # By centering the binder on the target, the binder starts where the
+        # model expects it AND near the motif.
         if self.motif_global_indices is not None:
             motif_idx_t = torch.tensor(self.motif_global_indices)
             binder_len = self.pose.binder_len()
 
-            # True motif center of mass (CA atoms)
-            true_motif_ca = self.ab_item.inputs.xyz_true[motif_idx_t, 1, :]
-            motif_com = true_motif_ca.mean(dim=0)
+            # Target center of mass (CA atoms)
+            target_ca = self.ab_item.inputs.xyz_true[binder_len:, 1, :]
+            target_com = target_ca.mean(dim=0)
 
-            # Current binder center of mass (CA atoms, excluding motif which may be NaN)
+            # Current binder center of mass (CA atoms)
             binder_ca = xT[:binder_len, 1, :]
             binder_com = binder_ca.mean(dim=0)
 
-            # Translate all binder atoms so binder COM = motif COM
-            shift = motif_com - binder_com
+            # Translate all binder atoms so binder COM = target COM
+            shift = target_com - binder_com
             xT[:binder_len] = xT[:binder_len] + shift[None, None, :]
 
             # Also snap motif to exact true coordinates in the initial xT
             n_atoms_xt = xT.shape[1]
             xT[motif_idx_t] = self.ab_item.inputs.xyz_true[motif_idx_t, :n_atoms_xt, :]
 
-            print(f"  Centered binder on motif COM (shift={float(shift.norm()):.1f}Å), "
+            # Log distances for diagnostics
+            true_motif_ca = self.ab_item.inputs.xyz_true[motif_idx_t, 1, :]
+            motif_com = true_motif_ca.mean(dim=0)
+            motif_target_dist = float((motif_com - target_com).norm())
+            print(f"  Centered binder on target COM (shift={float(shift.norm()):.1f}Å), "
+                  f"motif-target COM distance={motif_target_dist:.1f}Å, "
                   f"snapped motif to true coords in xT")
 
         #### 7) Mask the input sequence of the CDR loops
