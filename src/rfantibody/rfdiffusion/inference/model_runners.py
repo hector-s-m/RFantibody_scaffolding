@@ -509,35 +509,53 @@ class AbSampler(Sampler):
         #self.mask_seq = torch.clone(self.diffusion_mask)
         self.mask_str = torch.clone(self.diffusion_mask)
 
-        # Motif scaffolding: fix motif during diffusion AND apply soft connectivity spring.
-        # The motif must be fixed so the model designs around it at the correct
-        # target position. The soft spring (log-capped harmonic, weight=0.5) gently
-        # biases flanks toward the motif boundaries without gradient explosion.
-        # At the final step, Kabsch alignment corrects any residual drift.
+        # Motif scaffolding: soft springs instead of hard constraints.
+        # The motif diffuses freely (no diffusion_mask fix, no snap-back, no Kabsch).
+        # Two springs guide the structure:
+        #   1. motif_position: pulls motif backbone atoms toward true coords (tolerance 0.2Å)
+        #   2. motif_connectivity: pulls flank↔motif C-N bonds toward 1.33Å
+        # Both use dynamic weight (zero at t>T/2, ramp to max at t=1) and log-capped
+        # harmonic to prevent gradient explosion.
         if self.motif_global_indices is not None:
-            motif_idx_t = torch.tensor(self.motif_global_indices)
-            # Fix motif in structure and sequence
-            self.diffusion_mask[motif_idx_t] = True   # Don't diffuse motif coords
-            self.mask_seq[motif_idx_t] = True          # Don't diffuse motif sequence
-            self.mask_str[motif_idx_t] = True          # Don't diffuse motif structure
+            # Do NOT fix motif in diffusion_mask — let it diffuse freely
+            # The model can move the motif slightly to build a connected loop
+            # Springs pull it back gently toward true position
 
-            # Register connectivity potential via PotentialManager
-            # Uses C-N peptide bond distance (1.33Å) with dynamic weight schedule:
-            # zero for t > T/2, ramps to max_weight=1.0 at t=1
-            from rfantibody.rfdiffusion.potentials.potentials import motif_connectivity
+            from rfantibody.rfdiffusion.potentials.potentials import motif_connectivity, motif_position
             T = int(self.diffuser_conf.T)
+
+            # Store true motif coordinates for the position spring
+            motif_idx_t = torch.tensor(self.motif_global_indices)
+            true_motif_xyz = self.ab_item.inputs.xyz_true[motif_idx_t].clone()
+
+            # Spring 1: Pull motif backbone atoms toward true positions
+            pos_potential = motif_position(
+                motif_indices=self.motif_global_indices,
+                true_xyz=true_motif_xyz,
+                max_weight=2.0,         # Stronger than connectivity — position matters
+                tolerance=0.2,          # 0.2Å RMSD allowance
+                scale=2.0,              # Log-cap saturation
+                T=T,
+                activation_fraction=0.5,
+            )
+            self._motif_pos_potential = pos_potential
+            self.potential_manager.potentials_to_apply.append(pos_potential)
+
+            # Spring 2: Pull flank↔motif C-N bonds toward peptide bond distance
             conn_potential = motif_connectivity(
                 motif_indices=self.motif_global_indices,
-                max_weight=1.0,         # Peak weight at final steps
-                ideal_dist=1.33,        # C-N peptide bond length
-                tolerance=0.2,          # ±0.2Å tolerance
-                scale=3.0,              # Log-cap saturation scale
+                max_weight=1.0,
+                ideal_dist=1.33,
+                tolerance=0.2,
+                scale=3.0,
                 T=T,
-                activation_fraction=0.5,  # Active only in second half of schedule
+                activation_fraction=0.5,
             )
-            self._motif_conn_potential = conn_potential  # Keep reference for set_timestep
+            self._motif_conn_potential = conn_potential
             self.potential_manager.potentials_to_apply.append(conn_potential)
-            print(f"  Added motif_connectivity potential (C-N bond, dynamic weight 0→1.0, active t<{T//2})")
+
+            print(f"  Added motif_position potential (backbone→true coords, tolerance=0.2Å, weight 0→2.0)")
+            print(f"  Added motif_connectivity potential (C-N bond, weight 0→1.0, active t<{T//2})")
 
         # Determine the timesteps to use for diffusion
         if self.diffuser_conf.partial_T:
@@ -704,9 +722,11 @@ class AbSampler(Sampler):
 
     def sample_step(self, *, t, seq_t, x_t, seq_init, final_step):
 
-        # Update dynamic weight for motif connectivity potential
+        # Update dynamic weight for motif potentials
         if hasattr(self, '_motif_conn_potential'):
             self._motif_conn_potential.set_timestep(t)
+        if hasattr(self, '_motif_pos_potential'):
+            self._motif_pos_potential.set_timestep(t)
 
         msa_masked, msa_full, seq_in, xt_in, idx_pdb, t1d, t2d, xyz_t, alpha_t = self._preprocess(
             seq_t, x_t, t)
@@ -820,40 +840,38 @@ class AbSampler(Sampler):
             tors_t_1 = torch.ones((self.mask_str.shape[-1], 10, 2))
             px0 = px0.to(x_t.device)
 
-        # --- Motif scaffolding: snap-back + diagnostics + final Kabsch alignment ---
+        # --- Motif scaffolding: diagnostics only (no snap-back, no Kabsch) ---
+        # The motif diffuses freely. Two springs guide it:
+        #   motif_position: pulls backbone atoms toward true coords
+        #   motif_connectivity: pulls C-N bonds toward 1.33Å
+        # No hard coordinate overrides — springs handle everything.
         if self.motif_global_indices is not None:
             motif_idx = torch.tensor(self.motif_global_indices, device=x_t.device)
-            true_motif_coords = self.ab_item.inputs.xyz_true[motif_idx].to(x_t.device)
-            true_motif_ca = true_motif_coords[:, 1, :]
+            true_motif_ca = self.ab_item.inputs.xyz_true[motif_idx, 1, :].to(x_t.device)
 
-            # Snap motif coordinates back to exact true values at EVERY step.
-            # The diffusion_mask should prevent drift, but numerical accumulation
-            # can cause small errors. This ensures exact motif placement.
+            # Motif drift from true position (should converge to <0.2Å)
             motif_ca_pred = x_t_1[motif_idx, 1, :]
             motif_drift = float(torch.sqrt(((motif_ca_pred - true_motif_ca) ** 2).sum(-1).mean()))
-            n_atoms = x_t_1.shape[1]  # 14 or 27 depending on stage
-            x_t_1[motif_idx] = true_motif_coords[:, :n_atoms, :]
-            px0[motif_idx] = true_motif_coords[:, :n_atoms, :]
 
             # Track boundary distances for diagnostics
-            # C-N peptide bond: C(i) to N(i+1), ideal ~1.33Å
             first_motif = self.motif_global_indices[0]
             last_motif = self.motif_global_indices[-1]
             all_N = x_t_1[:, 0, :]   # N atoms
             all_C = x_t_1[:, 2, :]   # C atoms
             n_bond = float(torch.norm(all_N[first_motif] - all_C[first_motif - 1])) if first_motif > 0 else 0.0
             c_bond = float(torch.norm(all_N[last_motif + 1] - all_C[last_motif])) if last_motif < all_N.shape[0] - 1 else 0.0
-            # Also report CA-CA for reference
             all_ca = x_t_1[:, 1, :]
             n_ca = float(torch.norm(all_ca[first_motif] - all_ca[first_motif - 1])) if first_motif > 0 else 0.0
             c_ca = float(torch.norm(all_ca[last_motif + 1] - all_ca[last_motif])) if last_motif < all_ca.shape[0] - 1 else 0.0
-            # Dynamic weight for this timestep
-            dyn_w = self._motif_conn_potential._dynamic_weight() if hasattr(self, '_motif_conn_potential') else 0.0
+            # Dynamic weights
+            conn_w = self._motif_conn_potential._dynamic_weight() if hasattr(self, '_motif_conn_potential') else 0.0
+            pos_w = self._motif_pos_potential._dynamic_weight() if hasattr(self, '_motif_pos_potential') else 0.0
 
             self._log.info(
                 f'Timestep {t}: drift={motif_drift:.2f}Å, '
-                f'C-N bonds: {n_bond:.2f}/{c_bond:.2f}Å (ideal 1.33), '
-                f'CA-CA: {n_ca:.2f}/{c_ca:.2f}Å, spring_w={dyn_w:.3f}')
+                f'C-N: {n_bond:.2f}/{c_bond:.2f}Å, '
+                f'CA-CA: {n_ca:.2f}/{c_ca:.2f}Å, '
+                f'w_pos={pos_w:.3f} w_conn={conn_w:.3f}')
 
             if not hasattr(self, '_motif_diagnostics'):
                 self._motif_diagnostics = []
@@ -864,7 +882,8 @@ class AbSampler(Sampler):
                 'c_bond_CN': round(c_bond, 3),
                 'n_dist_CA': round(n_ca, 3),
                 'c_dist_CA': round(c_ca, 3),
-                'spring_weight': round(dyn_w, 4),
+                'w_position': round(pos_w, 4),
+                'w_connectivity': round(conn_w, 4),
             })
 
         return px0, x_t_1, seq_t_1, tors_t_1, plddt

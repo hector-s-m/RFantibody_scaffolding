@@ -950,6 +950,74 @@ class motif_connectivity(Potential):
         return -1 * weight * total_penalty
 
 
+class motif_position(Potential):
+    '''
+        Soft positional spring that pulls motif backbone atoms (N, CA, C) toward
+        their true crystallographic coordinates.
+
+        The motif diffuses freely (no hard mask), but this spring gently restores
+        it toward the target position. Combined with motif_connectivity, this
+        produces a connected loop with the motif at approximately the right place.
+
+        Uses per-atom log-capped harmonic: penalty = sum over motif atoms of
+            log(1 + (|pos_pred - pos_true| / scale)^2)
+
+        Only penalizes deviations beyond the tolerance (0.2Å default), so the
+        model has some freedom to adjust the motif slightly for connectivity.
+
+        Dynamic weight: zero at t > T*activation_fraction, ramps linearly to
+        max_weight at t=1.
+
+        Args:
+            motif_indices: list of global residue indices of motif residues
+            true_xyz: [M, 27, 3] true coordinates of motif residues
+            max_weight: peak strength at t=1 (default: 2.0)
+            tolerance: per-atom distance below which no penalty (default: 0.2Å)
+            scale: log-cap saturation scale (default: 2.0Å)
+            T: total diffusion timesteps (default: 200)
+            activation_fraction: fraction of schedule where spring activates (default: 0.5)
+    '''
+
+    def __init__(self, motif_indices, true_xyz, max_weight=2.0, tolerance=0.2,
+                 scale=2.0, T=200, activation_fraction=0.5):
+        self.motif_indices = motif_indices
+        self.true_xyz = true_xyz  # [M, 27, 3] — stored on CPU, moved to device in compute
+        self.max_weight = max_weight
+        self.tolerance = tolerance
+        self.scale = scale
+        self.T = T
+        self.activation_step = int(T * activation_fraction)
+        self._current_t = T
+
+    def set_timestep(self, t):
+        self._current_t = t
+
+    def _dynamic_weight(self):
+        t = self._current_t
+        if t > self.activation_step:
+            return 0.0
+        return self.max_weight * (1.0 - (t - 1) / max(self.activation_step - 1, 1))
+
+    def compute(self, seq, xyz):
+        weight = self._dynamic_weight()
+        if weight < 1e-6:
+            return torch.tensor(0.0, device=xyz.device, requires_grad=True)
+
+        total_penalty = torch.tensor(0.0, device=xyz.device)
+
+        # Compare N (0), CA (1), C (2) atoms of each motif residue
+        true_xyz_dev = self.true_xyz.to(xyz.device)
+        for i, global_idx in enumerate(self.motif_indices):
+            for atom_idx in [0, 1, 2]:  # N, CA, C
+                pred_atom = xyz[global_idx, atom_idx, :]
+                true_atom = true_xyz_dev[i, atom_idx, :]
+                d = torch.norm(pred_atom - true_atom + 1e-8)
+                deviation = torch.relu(d - self.tolerance)
+                total_penalty = total_penalty + torch.log1p((deviation / self.scale) ** 2)
+
+        return -1 * weight * total_penalty
+
+
 # Dictionary of types of potentials indexed by name of potential. Used by PotentialManager.
 # If you implement a new potential you must add it to this dictionary for it to be used by
 # the PotentialManager
@@ -966,7 +1034,8 @@ implemented_potentials = { 'monomer_ROG':          monomer_ROG,
                            'olig_contacts':        olig_contacts,
                            'substrate_contacts':   substrate_contacts,
                            'glycan_clash':         glycan_clash,
-                           'motif_connectivity':   motif_connectivity,}
+                           'motif_connectivity':   motif_connectivity,
+                           'motif_position':       motif_position,}
 
 require_binderlen      = { 'binder_ROG',
                            'binder_distance_ReLU',
